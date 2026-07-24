@@ -61,6 +61,16 @@ funzionante con `langchain-core` 1.x, tempi a freddo e a caldo — in
 **Verifica di fase:** admin navigabile, configurazione predefinita presente,
 nessun parametro salvabile in stato incoerente.
 
+**Stato: completata il 24/07/2026.** T-07 → T-13 chiuse. Verifica di fase
+superata: l'admin è navigabile e riservato (accesso anonimo respinto al login,
+RF-30), la configurazione predefinita è presente — **sette** righe create da
+`migrate`, un solo default per `LLMProfile` e per `RagPipeline` (RF-26) — e una
+configurazione incoerente non è salvabile nemmeno **dal form dell'admin** (RF-24,
+verificato via POST oltre che con `full_clean()`). Undici modelli, quattro
+migrazioni applicate. Debiti accertati verso P2 (deduplica nel servizio di
+ingestione, hook di cancellazione dei vettori, collezione `spike` da rimuovere) in
+[`plans/2026-07-24-1834-P1-plan-report.md`](plans/2026-07-24-1834-P1-plan-report.md).
+
 ## P2 — Ingestione
 
 | ID | Attività | Pri | Stima | Dipende da |
