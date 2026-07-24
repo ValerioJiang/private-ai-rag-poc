@@ -160,12 +160,29 @@ class RetrievalProfileAdmin(admin.ModelAdmin):
             {
                 "fields": ("name", "search_type"),
                 "description": (
-                    "Effetto immediato. «Similarita' con soglia» usa score_threshold, "
-                    "«MMR» usa fetch_k e lambda: gli altri campi restano inerti."
+                    "Effetto immediato. «Similarita' con soglia» usa "
+                    "score_threshold, «MMR» usa fetch_k e lambda: gli altri "
+                    "campi restano inerti."
                 ),
             },
         ),
-        ("Parametri", {"fields": ("top_k", "fetch_k", "lambda_mult", "score_threshold")}),
+        (
+            "Parametri",
+            {
+                "fields": ("top_k", "fetch_k", "lambda_mult", "score_threshold"),
+                "description": (
+                    "La «soglia di punteggio» si confronta con la RILEVANZA "
+                    "(1 − distanza cosine), non con la distanza grezza di "
+                    "pgvector: 1 = identico, 0 = estraneo. E' lo stesso numero "
+                    "mostrato accanto a ogni fonte nella risposta. Misure sul "
+                    "corpus di prova: domanda pertinente 0,68–0,73; stesso "
+                    "documento ma pagina sbagliata 0,35–0,46; domanda fuori "
+                    "tema 0,15–0,26. Il valore predefinito 0,5 cade fra la "
+                    "prima e la seconda banda. La soglia si applica DOPO "
+                    "«segmenti recuperati»: alzarla puo' restituire zero fonti."
+                ),
+            },
+        ),
         TRACCIAMENTO,
     )
 
