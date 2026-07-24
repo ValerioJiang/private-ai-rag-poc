@@ -1,7 +1,7 @@
 """Configurazione predefinita funzionante (RF-26).
 
 Senza questa migrazione un'installazione pulita richiederebbe di creare a mano
-sei righe prima di poter fare la prima domanda, e il criterio CA-1 («l'ambiente
+sette righe prima di poter fare la prima domanda, e il criterio CA-1 («l'ambiente
 si avvia da zero seguendo il solo README») non sarebbe soddisfatto.
 
 I valori non sono scelti a tavolino: sono quelli misurati e verificati durante
