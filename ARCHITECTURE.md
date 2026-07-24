@@ -106,7 +106,7 @@ flowchart TB
     subgraph infra["Adapter LangChain"]
         I1["PGVector"]
         I2["ChatOllama"]
-        I3["PyMuPDF (fitz)"]
+        I3["PyMuPDF (pymupdf)"]
         I4["TextSplitter"]
     end
     A1 --> S1
@@ -152,6 +152,21 @@ sequenceDiagram
 Lo stato è persistito sul `Document`, quindi l'admin mostra sempre il progresso
 reale e un fallimento resta ispezionabile (`error_message`) invece di sparire
 nei log.
+
+**Stato attuale.** La coda è P5 (T-32): oggi `ingest_document()` è chiamata in
+linea dal `save_model()` dell'admin e da `manage.py ingest`, quindi
+l'ingestione è **sincrona** e il chiamante attende per tutta la sua durata
+(RNF-03 non ancora soddisfatto). Il diagramma resta il bersaglio, e il servizio
+è scritto perché il passaggio alla coda cambi solo *chi* lo invoca.
+
+Finché l'innesco è sincrono, «in elaborazione» è però uno stato **osservabile
+solo a metà**: il servizio lo scrive prima del lavoro e fuori dalla transazione
+finale, ma l'admin avvolge l'intero POST in una transazione propria
+(`ModelAdmin.changeform_view`), quindi da lì la scrittura diventa visibile solo
+al commit della richiesta — cioè a lavoro già concluso. Da `manage.py ingest`,
+che non ha quella transazione attorno, lo stato è invece visibile durante
+l'indicizzazione. È l'asimmetria che la coda di T-32 rimuove: sarà il worker a
+scrivere quello stato, fuori dal ciclo richiesta/risposta.
 
 ---
 
@@ -373,6 +388,27 @@ tenere presente nelle migrazioni:
 | `QueryLog` → `RagPipeline` | `SET_NULL` | Lo storico delle interrogazioni sopravvive alla pipeline |
 | `RetrievedChunk` → `DocumentChunk` | `SET_NULL` | Lo storico sopravvive alla cancellazione del documento |
 
+L'hook della quarta riga vive in `rag/signals.py`: `pre_delete` raccoglie i
+`vector_id` finché le righe `DocumentChunk` esistono — il collector cancella i
+figli prima del padre, quindi in `post_delete` sarebbero già spariti — e
+`post_delete` ne programma la rimozione da pgvector con
+`transaction.on_commit()` (§6.5). Scatta **anche in cascata dalla
+`KnowledgeBase`**, perché la sola presenza di ricevitori esclude il *fast
+delete* del collector. Non rimuove invece il PDF da `MEDIA_ROOT`: è il
+comportamento predefinito di Django, ed è un limite dichiarato, non una svista.
+Allo stesso modo, cancellare una `KnowledgeBase` porta via i suoi vettori ma
+lascia la riga corrispondente in `langchain_pg_collection` — verificato: una
+collezione vuota e senza proprietario, innocua per il retrieval ma da conoscere
+prima di leggere quella tabella come inventario delle basi attive.
+
+La base di conoscenza di un documento, invece, è modificabile **solo al
+caricamento**: cfr. `DocumentAdmin.get_readonly_fields()`. Spostare un documento
+già indicizzato lo renderebbe invisibile in silenzio — i vettori resterebbero
+nella collezione di partenza, «disallineato» non se ne accorgerebbe perché
+confronta i valori dei profili e non l'identità della base, e nemmeno una
+reindicizzazione rimedierebbe, visto che l'upsert non riscrive `collection_id`
+(§7.9). Per spostare un documento lo si cancella e lo si ricarica.
+
 Vincoli a livello di DB:
 
 - `UniqueConstraint(knowledge_base, checksum)` su `Document` — deduplica gli
@@ -393,7 +429,22 @@ Il testo di ogni chunk esiste **due volte**: in `DocumentChunk.content` e in
   store; una reindicizzazione può ripartire dai chunk già calcolati.
 - **Contro:** circa il doppio dello spazio per il testo e due scritture da
   mantenere allineate. La riconciliazione avviene in un unico punto
-  (`services/ingestion.py`), dentro una transazione.
+  (`services/ingestion.py`), ma **non** dentro un'unica transazione: le due
+  metà stanno su due connessioni distinte — l'ORM di Django e l'engine
+  SQLAlchemy di `PGVector` — e nessun `transaction.atomic()` le comprende
+  entrambe. È il prezzo dichiarato in §7.9.
+
+Al posto dell'atomicità il progetto garantisce **l'ordine delle scritture**:
+prima i vettori in pgvector (upsert idempotente), poi le righe Django in
+`transaction.atomic()`. Se cade la seconda metà restano **vettori orfani**:
+invisibili al sistema, ricalcolabili, e sovrascritti dalla prossima
+indicizzazione perché gli id sono deterministici — `"<document_id>:<ordinal>"`.
+Il guasto si ripara da solo. L'ordine inverso lascerebbe chunk che puntano a
+vettori inesistenti, cioè un indice che mente al retrieval: un guasto
+silenzioso e permanente. In cancellazione la direzione del rischio si rovescia,
+ed è il motivo del `transaction.on_commit()` di §6.4 — la rimozione dei vettori
+è rinviata al commit perché un rollback di Django non lasci un documento vivo
+**senza** i suoi vettori.
 
 L'alternativa — tenere tutto solo nei metadata di pgvector — risparmierebbe
 spazio ma renderebbe l'admin cieco sul contenuto indicizzato, che è proprio ciò
@@ -443,6 +494,17 @@ adeguato — ma il fatto che passare da Ollama tiene l'intero progetto libero da
 torch e concentra l'inferenza in un solo servizio governabile dall'admin. Le
 1024 dimensioni sono il prezzo accettato, irrilevante alla scala di questa prova.
 
+Coerentemente, il provider «huggingface» resta un valore dell'enum
+`EmbeddingProfile.provider` ma non è attivabile: `get_embeddings()` lo rifiuta
+con `ConfigurazioneNonSupportata`, perché realizzarlo vorrebbe dire
+reintrodurre proprio torch. Altri due campi dello stesso profilo vanno letti
+con la stessa onestà: `normalize` **non** viene applicato dal codice — `bge-m3`
+restituisce già vettori a norma 1,000000 (misurato) e la distanza cosine è
+invariante alla scala, quindi normalizzare sarebbe codice dimostrabilmente
+inerte — mentre `batch_size` è fatto rispettare dal **servizio di ingestione**,
+non dalla factory: `OllamaEmbeddings` non sa batchare e `PGVector.add_texts()`
+invia tutti i testi in una sola richiesta (§7.9).
+
 ### 7.4 Strategia di chunking
 
 | Opzione | Pro | Contro |
@@ -453,7 +515,13 @@ torch e concentra l'inferenza in un solo servizio governabile dall'admin. Le
 | Layout-aware (`unstructured`) | Gestisce tabelle e layout multicolonna | Dipendenze pesanti (OCR, poppler), ingestione lenta |
 
 Recursive e token-based sono entrambi esposti come valori dell'enum
-`ChunkingProfile.splitter`: la scelta resta configurabile a runtime.
+`ChunkingProfile.splitter`, ma solo il primo è realizzato: `get_splitter()`
+rifiuta il token-based con `ConfigurazioneNonSupportata`. `TokenTextSplitter`
+richiederebbe `tiktoken`, che implementa i BPE di OpenAI: dimensionare con
+quello i chunk di `qwen2.5` e `bge-m3` significherebbe misurarli col metro di
+un altro modello, producendo un conteggio plausibile e falso. Il valore resta
+nell'enum come alternativa documentata, e il rifiuto è esplicito invece che
+silenzioso.
 
 ### 7.5 Elaborazione asincrona
 
@@ -574,6 +642,29 @@ uscita dalla serie 0.0.x — l'ultima release è la **0.0.17** — ma dichiara
 Non c'è conflitto di risoluzione; il rischio residuo è di comportamento, non di
 dipendenze, e va confermato dallo spike (T-06).
 
+**Comportamenti verificati sulla 0.0.17, che il codice deve tenere in conto.**
+Costruire un `PGVector` non è gratuito: `__post_init__` esegue DDL a **ogni**
+chiamata — `create_tables_if_not_exists()` e `create_collection()`, misurati
+0,55 s — quindi l'oggetto si costruisce una volta per ingestione, mai dentro un
+ciclo, e con `create_extension=False` visto che la migrazione iniziale ha già
+installato l'estensione. `add_texts()` invia **tutti** i testi in una sola
+richiesta, quindi il lotto lo decide il chiamante (§7.3). E
+`similarity_search_with_score()` restituisce una **distanza**, non una
+similarità — misurati 0,3038 sul chunk pertinente contro 0,4540 e 0,5617 —
+cioè un valore che ordina al contrario di come si legge il nome.
+
+Due comportamenti riguardano invece la scrittura, e vanno letti insieme perché
+smentiscono l'intuizione che la collezione sia un confine invalicabile.
+`delete(ids=…)` ha `collection_only=False` come **predefinito**: cancella per id
+attraverso *tutte* le collezioni. Qui è innocuo — anzi, utile — perché gli id
+sono `"<document_id>:<ordinal>"` e la chiave di `Document` è unica sull'intero
+database, quindi due collezioni non possono contenere lo stesso id; ma è bene
+sapere che l'isolamento poggia su quell'unicità e non sulla collezione. Nella
+direzione opposta, l'upsert aggiorna `embedding`, `document` e `cmetadata` ma
+**non** `collection_id`: un vettore già esistente riscritto da un'altra
+collezione resta agganciato a quella di partenza. È la ragione per cui la base
+di conoscenza di un documento non è modificabile dopo il caricamento (§6.4).
+
 **Piano di ripiego dichiarato:** se l'integrazione si rivelasse instabile, il
 retriever custom sull'ORM è la via di uscita già valutata: costa circa mezza
 giornata, elimina i compromessi §6.3 e §6.5, riduce l'albero delle dipendenze,
@@ -587,7 +678,7 @@ di PyMuPDF**: vive in `langchain-community`.
 
 | Opzione | Pro | Contro |
 |---|---|---|
-| **PyMuPDF diretto (`fitz`)** ✅ | ~10 righe per produrre `Document` con `page` nei metadata; controllo totale sul rilevamento del PDF senza testo (RF-10); **zero dipendenze aggiuntive** | Il codice del loader è nostro, quindi da testare |
+| **PyMuPDF diretto (`pymupdf`, nome canonico dalla 1.24; `fitz` resta un alias)** ✅ | ~10 righe per produrre `Document` con `page` nei metadata; controllo totale sul rilevamento del PDF senza testo (RF-10); **zero dipendenze aggiuntive** | Il codice del loader è nostro, quindi da testare |
 | `langchain_community.document_loaders.PyMuPDFLoader` | Poche righe in meno, metadata già popolati | Trascina `langchain-community` → `langchain-classic`, `aiohttp`, `requests`, `pydantic-settings`, `tenacity`: sei pacchetti per dieci righe |
 
 Scelta: **PyMuPDF diretto**, per proporzione fra beneficio e peso. È l'unica
@@ -615,7 +706,12 @@ buttato** come il resto, ma scritto con cura fin da subito e promosso in T-14.
    `langchain_pg_embedding`: il database non rifiuta un vettore di lunghezza
    diversa. La coerenza va quindi garantita dal codice — profilo immutabile
    finché esistono documenti indicizzati, e collezioni separate per profili
-   diversi — non delegata allo schema. Modificare `EmbeddingProfile` su una
+   diversi — non delegata allo schema. Dalla P2 la garanzia non è più solo
+   procedurale: `verify_embedding_dimension()` calcola una sonda e confronta la
+   lunghezza del vettore con `EmbeddingProfile.dimension` prima di indicizzare
+   (1024, verificato), fermando l'ingestione con un errore leggibile se non
+   coincidono. Costa un embedding per documento, e in cambio trasforma il campo
+   da descrittivo a invariante verificato. Modificare `EmbeddingProfile` su una
    `KnowledgeBase` già popolata romperebbe comunque il retrieval: è prevista
    un'azione admin «ricostruisci collezione» che reindicizza tutto.
 2. **`base_url` modificabile dall'admin** è ciò che rende il sistema

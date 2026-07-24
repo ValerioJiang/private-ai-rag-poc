@@ -86,6 +86,25 @@ ingestione, hook di cancellazione dei vettori, collezione `spike` da rimuovere) 
 **Verifica di fase:** upload dall'admin → stato *indicizzato*, chunk visibili con
 pagina e ordinale.
 
+**Stato: completata il 24/07/2026.** T-14 → T-20 chiuse. Verifica di fase
+superata nei suoi nove punti, da (a) a (i): l'upload dall'admin porta il
+documento a *indicizzato* con pagine e segmenti in elenco e i chunk ispezionabili
+con ordinale, pagina, caratteri ed estratto (CA-2); duplicato e PDF illeggibile
+sono respinti con un motivo leggibile senza compromettere l'admin (RF-09, CA-8);
+la cancellazione porta via anche i vettori (RF-08). Coperti RF-01 → RF-10, RF-19,
+RF-25, RF-28, RF-29 e RNF-04; abilitati CA-2 e CA-8. Nessuna migrazione, nessuna
+dipendenza nuova. Limite dell'esecuzione, dichiarato: senza un browser a
+disposizione la verifica è stata replicata con `django.test.Client`, che percorre
+la stessa pila (URLconf, autenticazione, `ModelAdmin`, form, template) ma non il
+rendering visivo. Debiti accertati verso le fasi seguenti: la riconciliazione fra
+`DocumentChunk` e pgvector avviene in un punto solo ma **non** dentro un'unica
+transazione — le due metà dello schema stanno su connessioni distinte — e
+l'ingestione resta **sincrona** (~0,8–1 s per segmento più ~1 s di sonda fissa,
+fino a ~18 s a freddo), quindi RNF-03 non è soddisfatto finché resta aperta T-32.
+La collezione `spike` è stata rimossa; `scripts/spike_rag.py` resta fino alla
+chiusura di P3, finché `manage.py ask` non esiste. Dettaglio in
+[`plans/2026-07-24-2259-P2-plan-report.md`](plans/2026-07-24-2259-P2-plan-report.md).
+
 ## P3 — Retrieval e generazione
 
 | ID | Attività | Pri | Stima | Dipende da |
