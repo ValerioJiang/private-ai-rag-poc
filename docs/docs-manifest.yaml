@@ -1,0 +1,17 @@
+# Documentazione da tenere allineata alle modifiche di codice.
+# Usata dalla skill /update-docs. Percorsi relativi alla radice del progetto.
+
+# Documento d'ingresso: e' il primo che legge chi valuta il progetto.
+primary:
+  - README.md
+
+# Documenti di analisi e pianificazione.
+docs:
+  - ARCHITECTURE.md
+  - REQUIREMENTS.md
+  - PLAN.md
+  - BACKLOG.md
+
+# Nessuno scan_dirs di proposito: plans/ contiene piani ed esecuzioni storiche,
+# che NON vanno riallineati a posteriori. Sono un registro di cosa si e' deciso
+# quando, e riscriverli cancellerebbe l'unica traccia del percorso seguito.

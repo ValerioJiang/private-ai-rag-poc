@@ -39,6 +39,13 @@ qualcosa che già funziona.
 **Verifica di fase:** una domanda su un PDF reale riceve una risposta sensata,
 per quanto il codice sia da buttare.
 
+**Stato: completata il 24/07/2026.** T-01 → T-06 chiuse. Verifica di fase
+superata: lo spike risponde correttamente su `samples/manuale-dipendenti.pdf` e
+dichiara di non sapere quando l'informazione non è nel documento. Dati raccolti
+sul campo — embedding a **1024** dimensioni, `PGVector.from_documents()`
+funzionante con `langchain-core` 1.x, tempi a freddo e a caldo — in
+[`plans/2026-07-23-1800-P0-scaffolding-plan-report.md`](plans/2026-07-23-1800-P0-scaffolding-plan-report.md).
+
 ## P1 — Modelli e admin
 
 | ID | Attività | Pri | Stima | Dipende da |

@@ -58,6 +58,12 @@ python manage.py runserver
 
 Admin su http://localhost:8000/admin/ · stato del servizio su `/health`.
 
+Il database è pubblicato sulla porta **5434**, non sulla 5432: le porte
+consuete sono spesso già occupate da altri stack. Il valore sta in
+`.env.example`, quindi i comandi qui sopra funzionano così come sono; serve
+saperlo solo per collegarsi al database dall'esterno. Dentro la rete di Compose
+vale invece la porta interna 5432.
+
 ## Licenza
 
 Progetto realizzato come prova tecnica.
