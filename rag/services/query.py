@@ -39,7 +39,22 @@ import logging
 import time
 from dataclasses import dataclass, replace
 
-from ..models import DocumentChunk, RetrievalProfile
+import httpx
+from langchain_core.messages import SystemMessage
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
+
+from ..models import (
+    RISPOSTA_NON_DISPONIBILE,
+    DocumentChunk,
+    PromptTemplate as ProfiloPrompt,   # alias: il nome collide con quello di
+                                       # langchain_core.prompts. Cfr. la
+                                       # docstring del modello.
+    RagPipeline,
+    RetrievalProfile,
+)
+from .exceptions import DomandaVuota, LlmNonRaggiungibile, PipelineNonUtilizzabile
+from .factories import get_llm, get_vectorstore
 from .ingestion import vector_id
 
 logger = logging.getLogger(__name__)
@@ -233,3 +248,246 @@ def formatta_contesto(segmenti: list[SegmentoRecuperato]) -> str:
     return "\n\n".join(
         f"[{s.documento}, pagina {s.pagina}]\n{s.testo}" for s in segmenti
     )
+
+
+def build_prompt(profilo: ProfiloPrompt) -> ChatPromptTemplate:
+    """Compone il prompt dai due campi modificabili dall'admin (RF-21).
+
+    IL PROMPT DI SISTEMA NON E' UN TEMPLATE, ed e' una scelta di correttezza.
+    ChatPromptTemplate.from_messages([("system", testo), …]) estrarrebbe le
+    {…} ANCHE dal prompt di sistema: un amministratore che vi scrivesse una
+    graffa — un esempio JSON, una formula — romperebbe ogni richiesta
+    successiva con un KeyError al momento dell'invoke. Il campo e' modificabile
+    dall'admin per requisito, quindi e' una porta aperta.
+
+    Passando un SystemMessage GIA' COSTRUITO, LangChain lo inserisce
+    letteralmente. Verificato: input_variables resta ['context', 'question'] e
+    una graffa nel prompt di sistema arriva intatta al modello.
+
+    I VALORI sostituiti non vengono ri-analizzati (verificato), quindi anche una
+    graffa nel testo di un chunk e' innocua.
+    """
+    return ChatPromptTemplate.from_messages(
+        [
+            SystemMessage(content=profilo.system_prompt),
+            HumanMessagePromptTemplate.from_template(profilo.template),
+        ]
+    )
+
+
+def seleziona_pipeline(riferimento: str | int | None = None) -> RagPipeline:
+    """Sceglie la pipeline dell'interrogazione (RF-15).
+
+    Tre forme accettate, nell'ordine: id numerico, nome esatto, oppure —
+    se il riferimento manca — la pipeline predefinita (RF-26).
+
+    Una pipeline NON ATTIVA e' rifiutata anche se richiesta esplicitamente:
+    is_active esiste per poter ritirare una configurazione senza cancellarla,
+    e onorarla solo quando comodo la svuoterebbe di significato.
+    """
+    base = RagPipeline.objects.select_related(
+        "knowledge_base",
+        "knowledge_base__embedding_profile",
+        "knowledge_base__chunking_profile",
+        "llm_profile",
+        "retrieval_profile",
+        "prompt_template",
+    )
+
+    if riferimento is None or riferimento == "":
+        pipeline = base.filter(is_default=True).first()
+        if pipeline is None:
+            disponibili = ", ".join(
+                RagPipeline.objects.filter(is_active=True).values_list("name", flat=True)
+            )
+            raise PipelineNonUtilizzabile(
+                "Nessuna pipeline predefinita configurata. Indicarne una "
+                f"esplicitamente, oppure designarne una come predefinita "
+                f"nell'admin. Attive: {disponibili or 'nessuna'}."
+            )
+    else:
+        testo = str(riferimento)
+        pipeline = (
+            base.filter(pk=int(testo)).first()
+            if testo.isdigit()
+            else base.filter(name=testo).first()
+        )
+        if pipeline is None:
+            disponibili = ", ".join(
+                RagPipeline.objects.filter(is_active=True).values_list("name", flat=True)
+            )
+            raise PipelineNonUtilizzabile(
+                f"Pipeline «{riferimento}» inesistente. Attive: "
+                f"{disponibili or 'nessuna'}."
+            )
+
+    if not pipeline.is_active:
+        raise PipelineNonUtilizzabile(
+            f"La pipeline «{pipeline.name}» non e' attiva: riattivarla "
+            "dall'admin oppure sceglierne un'altra."
+        )
+    return pipeline
+
+
+@dataclass(frozen=True)
+class CatenaRag:
+    """Cio' che serve per rispondere, gia' costruito dalla configurazione.
+
+    NON e' memorizzata in cache, e la scelta e' deliberata: ARCHITECTURE §3
+    dice che build_chain() legge la configurazione a ogni richiesta, ed e'
+    esattamente cio' che rende RF-22 dimostrabile. Le due parti costose —
+    l'LLM e il vector store — sono memorizzate una per una dentro le factory,
+    quindi «leggere a ogni richiesta» costa una query e qualche microsecondo.
+    """
+
+    pipeline: RagPipeline
+    store: object            # PGVector; non tipizzato per non importarlo qui
+    retrieval: RetrievalProfile
+    catena: object           # Runnable LCEL: prompt | llm | StrOutputParser
+
+
+def build_chain(pipeline: RagPipeline) -> CatenaRag:
+    """Configurazione → catena eseguibile (T-23, RF-22).
+
+    Tre differenze deliberate rispetto alla catena dello spike (T-06):
+
+    1. ogni parametro viene da una riga di database, nessuno e' scritto qui;
+    2. il prompt di sistema e' un SystemMessage e non un template (cfr.
+       build_prompt);
+    3. il recupero NON e' un anello della catena. Sta fuori, prima, perche'
+       QueryLog vuole retrieval_ms e generation_ms SEPARATI (cfr. la docstring
+       del modello: in P0 si e' misurato un recupero da 12 s accanto a una
+       generazione da 1). Dentro una catena unica i due tempi sarebbero
+       distinguibili solo con dei callback, cioe' con piu' codice per un
+       risultato peggiore.
+    """
+    llm = get_llm(pipeline.llm_profile)
+    store = get_vectorstore(pipeline.knowledge_base)
+    prompt = build_prompt(pipeline.prompt_template)
+    return CatenaRag(
+        pipeline=pipeline,
+        store=store,
+        retrieval=pipeline.retrieval_profile,
+        catena=prompt | llm | StrOutputParser(),
+    )
+
+
+@dataclass(frozen=True)
+class EsitoInterrogazione:
+    """Risposta, fonti e tempi (RF-11, RF-13, RF-16)."""
+
+    domanda: str
+    risposta: str
+    segmenti: list[SegmentoRecuperato]
+    pipeline_nome: str
+    retrieval_ms: int
+    generation_ms: int
+    latency_ms: int
+    generata: bool            # False = non-risposta a monte dell'LLM (T-25)
+    query_log_id: int | None = None
+
+    @property
+    def fonti(self) -> list[dict]:
+        return [s.come_fonte() for s in self.segmenti]
+
+    def __str__(self) -> str:
+        return (
+            f"{len(self.segmenti)} fonti, {self.latency_ms} ms "
+            f"(recupero {self.retrieval_ms}, generazione {self.generation_ms})"
+        )
+
+
+def rispondi(
+    domanda: str,
+    *,
+    pipeline: RagPipeline | None = None,
+    utente=None,
+) -> EsitoInterrogazione:
+    """Risponde a una domanda usando la configurazione della pipeline.
+
+    Sincrona, come tutto il resto del sistema in questa fase.
+
+    Solleva:
+        DomandaVuota, PipelineNonUtilizzabile, ConfigurazioneNonSupportata,
+        LlmNonRaggiungibile — tutte sottoclassi di QueryError, cioe' condizioni
+        previste da riportare all'utente in forma leggibile.
+    """
+    domanda = (domanda or "").strip()
+    if not domanda:
+        raise DomandaVuota(
+            "La domanda e' vuota: non c'e' nulla da cercare nei documenti."
+        )
+
+    inizio = time.perf_counter()
+    if pipeline is None:
+        pipeline = seleziona_pipeline()
+    catena = build_chain(pipeline)
+
+    # --- recupero, cronometrato a parte -----------------------------------
+    t0 = time.perf_counter()
+    segmenti = esegui_ricerca(catena.store, catena.retrieval, domanda)
+    retrieval_ms = int((time.perf_counter() - t0) * 1000)
+
+    # --- generazione, oppure la non-risposta (T-25, RF-14) ----------------
+    generation_ms = 0
+    if segmenti:
+        t0 = time.perf_counter()
+        try:
+            risposta = catena.catena.invoke(
+                {"context": formatta_contesto(segmenti), "question": domanda}
+            ).strip()
+        except (OSError, httpx.TransportError) as exc:
+            # Si traducono SOLO le due famiglie del guasto di trasporto. Un
+            # KeyError o un TypeError qui NON sono un LLM irraggiungibile e
+            # devono restare guasti inattesi, con il loro stack: chiamare «non
+            # raggiungibile» un errore di programmazione manderebbe a cercare
+            # nel posto sbagliato.
+            #
+            # OSError e' la famiglia di ConnectionError builtin, quella che
+            # langchain_ollama solleva dal lato EMBEDDING e da get_llm().
+            #
+            # httpx.TransportError NON e' sottoclasse di OSError, ed e' il tipo
+            # MISURATO qui il 25/07/2026 con Ollama spento: ChatOllama.invoke()
+            # lascia passare httpx.ConnectError grezza («[WinError 10061] No
+            # connection could be made…»), senza la traduzione che le
+            # OllamaEmbeddings fanno. Un `except OSError` da solo avrebbe quindi
+            # lasciato sfuggire proprio il caso per cui esiste. Si cattura la
+            # famiglia TransportError e non HTTPError perche' comprende tutti i
+            # guasti di trasporto — connessione rifiutata, timeout di lettura
+            # allo scadere di timeout_s, protocollo interrotto — mentre una
+            # risposta HTTP di errore arriva come ollama.ResponseError, che e'
+            # un'altra cosa e non va chiamata «servizio irraggiungibile».
+            raise LlmNonRaggiungibile(
+                f"Il servizio di inferenza non ha risposto durante la "
+                f"generazione ({type(exc).__name__}): {exc}. Verificare che "
+                f"Ollama sia in esecuzione su "
+                f"{pipeline.llm_profile.base_url}."
+            ) from exc
+        generation_ms = int((time.perf_counter() - t0) * 1000)
+        generata = True
+    else:
+        # Zero segmenti = nessun contesto pertinente. Si dichiara di non
+        # sapere SENZA interrogare l'LLM: e' la promessa scritta in
+        # rag/models/profiles.py righe 21-24, ed e' anche l'unica forma di
+        # RF-14 che non dipenda dall'obbedienza del modello al prompt.
+        # Copre due casi: soglia non superata, e base di conoscenza vuota.
+        risposta = RISPOSTA_NON_DISPONIBILE
+        generata = False
+        logger.info(
+            "Nessun segmento pertinente per «%.60s»: risposta dichiarata non "
+            "disponibile senza interrogare l'LLM (RF-14).",
+            domanda,
+        )
+
+    esito = EsitoInterrogazione(
+        domanda=domanda,
+        risposta=risposta,
+        segmenti=segmenti,
+        pipeline_nome=pipeline.name,
+        retrieval_ms=retrieval_ms,
+        generation_ms=generation_ms,
+        latency_ms=int((time.perf_counter() - inizio) * 1000),
+        generata=generata,
+    )
+    logger.info("Interrogazione completata — %s", esito)
+    return esito

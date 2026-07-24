@@ -13,6 +13,8 @@ I valori di default non sono inventati: sono quelli misurati in P0 sulla
 macchina (cfr. il report di P0, sezione «DATI DI REALTA'»).
 """
 
+import string
+
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -346,7 +348,9 @@ class PromptTemplate(TimestampedModel):
 
     def clean(self) -> None:
         super().clean()
-        mancanti = [p for p in ("{context}", "{question}") if p not in (self.template or "")]
+        testo = self.template or ""
+
+        mancanti = [p for p in ("{context}", "{question}") if p not in testo]
         if mancanti:
             raise ValidationError(
                 {
@@ -354,6 +358,30 @@ class PromptTemplate(TimestampedModel):
                         "Segnaposto mancanti: "
                         + ", ".join(mancanti)
                         + ". Senza di essi la catena ignorerebbe il contesto o la domanda."
+                    )
+                }
+            )
+
+        # I segnaposto IN PIU' sono altrettanto fatali, e in modo peggiore:
+        # passerebbero il salvataggio e romperebbero la richiesta SUCCESSIVA
+        # con un KeyError dentro la catena, cioe' una 500 prodotta da una
+        # configurazione che l'admin ha accettato. RF-24 chiede che una
+        # configurazione incoerente non sia salvabile: questa lo e'.
+        ammessi = {"context", "question"}
+        trovati = {
+            nome for _, nome, _, _ in string.Formatter().parse(testo) if nome
+        }
+        estranei = sorted(trovati - ammessi)
+        if estranei:
+            raise ValidationError(
+                {
+                    "template": (
+                        "Segnaposto non riconosciuti: "
+                        + ", ".join("{" + n + "}" for n in estranei)
+                        + ". La catena fornisce solo {context} e {question}; "
+                        "qualunque altro nome farebbe fallire ogni "
+                        "interrogazione successiva. Per una graffa letterale "
+                        "raddoppiarla: {{ e }}."
                     )
                 }
             )
