@@ -5,23 +5,98 @@ che traduce profili in oggetti. Tutto il resto del codice riceve oggetti gia'
 costruiti e non sa da dove vengano i parametri. E' il motivo per cui una
 modifica dall'admin ha effetto senza toccare il codice.
 
-In P2 esistono solo le tre factory della configurazione d'INDICE. get_llm() e
-get_retriever() sono T-21 e T-22, in P3, insieme alla cache invalidata da
-post_save: NON anticiparle qui.
+LA CACHE, E PERCHE' LA CHIAVE CONTIENE I VALORI E NON SOLO L'ID.
+
+Due costruzioni sono costose e si ripeterebbero a ogni richiesta: ChatOllama
+con validate_model_on_init (0,73 s, misurato) e PGVector, che esegue DDL nel
+proprio __post_init__ (0,85 s, misurato). Vengono memorizzate in un dizionario
+di modulo.
+
+NON si usa django.core.cache. LocMemCache serializza con pickle anche restando
+in-process, e nessuno dei due oggetti attraversa pickle: contengono un client
+httpx e un engine SQLAlchemy, cioe' lock di thread. Verificato —
+`cache.set()` solleva «TypeError: cannot pickle '_thread.RLock' object» per
+entrambi. Il commento in config/settings/base.py che prescrive LocMemCache per
+questo scopo e' da correggere in T-40.
+
+La chiave di ogni voce contiene qualcosa che cambia quando cambia la
+CONFIGURAZIONE — updated_at per i profili, index_fingerprint() per la base di
+conoscenza — e non solo la chiave primaria. E' cio' che rende corretto RF-22
+anche in un processo che non ha ricevuto il post_save, cioe' con piu' worker:
+chi interroga rilegge comunque quelle righe a ogni richiesta e vede subito il
+valore nuovo. Il receiver di rag/signals.py serve a liberare memoria e a
+rendere l'effetto immediato, NON a garantire la correttezza. Chi legge questo
+file piu' avanti deve saperlo, altrimenti replichera' la forma senza la
+sostanza.
+
+Limite dichiarato: QuerySet.update() aggira sia auto_now sia post_save. Nessun
+codice del progetto lo usa sui profili, e l'admin non lo usa.
 """
 
 from __future__ import annotations
 
+import logging
+from typing import Callable, TypeVar
 from urllib.parse import quote
 
 from django.conf import settings
 from langchain_core.embeddings import Embeddings
-from langchain_ollama import OllamaEmbeddings
+from langchain_core.language_models import BaseChatModel
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_postgres import PGVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter, TextSplitter
 
-from ..models import ChunkingProfile, EmbeddingProfile, KnowledgeBase
-from .exceptions import ConfigurazioneNonSupportata
+from ..models import ChunkingProfile, EmbeddingProfile, KnowledgeBase, LLMProfile
+from .exceptions import ConfigurazioneNonSupportata, LlmNonRaggiungibile
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+# --------------------------------------------------------------------------
+# Cache in-process (T-21, RF-22)
+# --------------------------------------------------------------------------
+
+_CACHE: dict[str, object] = {}
+
+# Limite di guardia, non un LRU. Ogni modifica dall'admin produce una chiave
+# nuova, e il receiver di signals.py svuota il dizionario nel processo che ha
+# salvato; in un ALTRO processo le voci vecchie resterebbero. Trentadue e' piu'
+# di quante configurazioni distinte possano essere in uso davvero, e superarlo
+# significa svuotare tutto: la voce successiva costa 0,7-0,9 s di ricostruzione,
+# non una perdita di correttezza.
+_LIMITE_CACHE = 32
+
+
+def svuota_cache() -> None:
+    """Dimentica gli oggetti costruiti. La chiama il receiver di signals.py.
+
+    Non e' cio' che garantisce RF-22 — lo garantisce la chiave, cfr. la
+    docstring di modulo — ma rende l'effetto immediato nel processo che ha
+    salvato e impedisce al dizionario di crescere a ogni modifica.
+    """
+    quanti = len(_CACHE)
+    _CACHE.clear()
+    if quanti:
+        logger.debug("Cache delle factory svuotata (%s voci).", quanti)
+
+
+def _memoizza(chiave: str, costruisci: Callable[[], T]) -> T:
+    """Restituisce l'oggetto associato alla chiave, costruendolo se manca.
+
+    La chiave DEVE contenere i valori della configurazione, non solo il suo
+    id: cfr. la docstring di modulo.
+    """
+    memorizzato = _CACHE.get(chiave)
+    if memorizzato is not None:
+        return memorizzato  # type: ignore[return-value]
+    if len(_CACHE) >= _LIMITE_CACHE:
+        svuota_cache()
+    costruito = costruisci()
+    _CACHE[chiave] = costruito
+    logger.debug("Costruito e memorizzato: %s", chiave)
+    return costruito
 
 
 def connection_string() -> str:
@@ -113,6 +188,83 @@ def get_embeddings(profile: EmbeddingProfile) -> Embeddings:
     )
 
 
+def get_llm(profile: LLMProfile) -> BaseChatModel:
+    """Costruisce il modello di generazione descritto dal profilo (T-21, RF-22).
+
+    A differenza di get_embeddings(), l'endpoint viene DAL PROFILO
+    (LLMProfile.base_url) e non da settings: e' l'asimmetria dichiarata in
+    ARCHITECTURE §9 e nel help_text del campo. Spostare la generazione su un
+    altro host e' una funzionalita' richiesta; spostare gli embedding no,
+    perche' aggiungerebbe un secondo punto d'uscita per il testo dei documenti
+    senza alcun beneficio.
+
+    validate_model_on_init=True costa una chiamata a /api/tags (0,73 s alla
+    costruzione, misurato) e vale il prezzo: e' il punto in cui «modello non
+    scaricato» e «Ollama spento» diventano messaggi leggibili invece di un
+    guasto a meta' generazione. E' il gemello di verify_embedding_dimension().
+
+    TRAPPOLA VERIFICATA — le due condizioni sollevano eccezioni di famiglie
+    DIVERSE:
+
+      - modello non scaricato -> pydantic_core.ValidationError, che e'
+        sottoclasse di ValueError;
+      - Ollama spento -> ConnectionError BUILTIN, sottoclasse di OSError, che
+        sfugge del tutto al validatore pydantic.
+
+    Un `except ValueError` da solo lascerebbe passare il secondo — che e' il
+    caso piu' frequente — come guasto inatteso. Da qui `(ValueError, OSError)`.
+
+    Il risultato e' memorizzato: cfr. la docstring di modulo per il perche'
+    della chiave.
+
+    Solleva:
+        ConfigurazioneNonSupportata: provider dichiarato nell'enum ma non
+            realizzabile in questa installazione.
+        LlmNonRaggiungibile: servizio spento o modello non disponibile.
+    """
+    if profile.provider != LLMProfile.Provider.OLLAMA:
+        # Il provider «API OpenAI-compatibile» richiederebbe langchain-openai,
+        # che non e' fra le dipendenze (verificato: ModuleNotFoundError). Il
+        # valore resta nell'enum come alternativa documentata, non come opzione
+        # attivabile. Stessa forma del rifiuto di «huggingface» in
+        # get_embeddings().
+        raise ConfigurazioneNonSupportata(
+            f"Il profilo LLM «{profile.name}» usa il provider "
+            f"«{profile.get_provider_display()}», che questa installazione non "
+            "realizza: richiederebbe il pacchetto langchain-openai, escluso "
+            "dalle dipendenze perche' il progetto genera solo in locale "
+            "(ARCHITECTURE §9). Selezionare il provider «Ollama»."
+        )
+
+    def costruisci() -> BaseChatModel:
+        try:
+            return ChatOllama(
+                model=profile.model_name,
+                base_url=profile.base_url,
+                temperature=profile.temperature,
+                top_p=profile.top_p,
+                top_k=profile.top_k,
+                # In Ollama il limite di token GENERATI si chiama num_predict.
+                # ChatOllama non ha un campo max_tokens: verificato sui
+                # model_fields della 1.1.0.
+                num_predict=profile.max_tokens,
+                validate_model_on_init=True,
+                # ChatOllama non espone un campo timeout: i kwargs finiscono
+                # a httpx attraverso ollama.Client(host=..., **kwargs).
+                # Verificato sul sorgente di _set_clients().
+                client_kwargs={"timeout": profile.timeout_s},
+            )
+        except (ValueError, OSError) as exc:
+            raise LlmNonRaggiungibile(
+                f"Il modello «{profile.model_name}» del profilo «{profile.name}» "
+                f"non e' utilizzabile su {profile.base_url}: {exc}. Verificare "
+                f"che Ollama sia in esecuzione e che il modello sia stato "
+                f"scaricato (`ollama pull {profile.model_name}`)."
+            ) from exc
+
+    return _memoizza(f"llm:{profile.pk}:{profile.updated_at.timestamp()}", costruisci)
+
+
 def verify_embedding_dimension(embeddings: Embeddings, profile: EmbeddingProfile) -> int:
     """Verifica che il modello produca vettori della dimensione dichiarata.
 
@@ -168,11 +320,34 @@ def get_vectorstore(
 
     embeddings e' iniettabile per non pagare due volte la costruzione quando il
     chiamante lo ha gia'.
+
+    MEMORIZZATO da T-21, e la chiave e' la coppia (id, impronta dei profili
+    d'indice): cambiare modello di embedding produce una chiave nuova, quindi
+    un oggetto nuovo. E' anche il motivo per cui il DDL di cui sopra si paga
+    UNA volta per processo e non a ogni richiesta.
+
+    CONSEGUENZA da conoscere: al secondo passaggio con la stessa chiave
+    l'argomento `embeddings` viene IGNORATO, perche' l'oggetto memorizzato e'
+    gia' costruito. Non e' un problema — l'impronta nella chiave copre i valori
+    del profilo di embedding, quindi due oggetti con la stessa chiave sono
+    equivalenti — ma va saputo prima di passare un embeddings «speciale»
+    aspettandosi che venga usato.
+
+    Secondo limite dichiarato: l'oggetto memorizzato tiene vivo un engine
+    SQLAlchemy. Se il database viene riavviato, la voce in cache resta e le sue
+    connessioni sono da riaprire; il pool di SQLAlchemy lo fa da se', ma una
+    collezione cancellata a mano DA FUORI non verrebbe piu' ricreata dal DDL
+    finche' la voce resta.
     """
-    return PGVector(
-        embeddings=embeddings or get_embeddings(knowledge_base.embedding_profile),
-        collection_name=knowledge_base.collection_name,
-        connection=connection_string(),
-        use_jsonb=True,
-        create_extension=False,
+    def costruisci() -> PGVector:
+        return PGVector(
+            embeddings=embeddings or get_embeddings(knowledge_base.embedding_profile),
+            collection_name=knowledge_base.collection_name,
+            connection=connection_string(),
+            use_jsonb=True,
+            create_extension=False,
+        )
+
+    return _memoizza(
+        f"store:{knowledge_base.pk}:{knowledge_base.index_fingerprint()}", costruisci
     )

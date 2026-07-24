@@ -36,10 +36,19 @@ muore fra la scrittura dei vettori e quella delle righe.
 import logging
 
 from django.db import transaction
-from django.db.models.signals import post_delete, pre_delete
+from django.db.models.signals import post_delete, post_save, pre_delete
 from django.dispatch import receiver
 
-from .models import Document
+from .models import (
+    ChunkingProfile,
+    Document,
+    EmbeddingProfile,
+    KnowledgeBase,
+    LLMProfile,
+    PromptTemplate,
+    RagPipeline,
+    RetrievalProfile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,3 +102,51 @@ def rimuovi_vettori(sender, instance: Document, **kwargs) -> None:
             )
 
     transaction.on_commit(pulisci)
+
+
+# --------------------------------------------------------------------------
+# Invalidazione della cache delle factory (T-21, RF-22)
+# --------------------------------------------------------------------------
+
+# Sette modelli: tutto cio' che concorre a costruire un LLM o un vector store,
+# piu' RagPipeline che li compone. NON DocumentChunk ne' Document: il contenuto
+# dell'indice cambia di continuo e non ha alcun effetto sugli OGGETTI costruiti.
+MODELLI_DI_CONFIGURAZIONE = (
+    LLMProfile,
+    EmbeddingProfile,
+    ChunkingProfile,
+    RetrievalProfile,
+    PromptTemplate,
+    KnowledgeBase,
+    RagPipeline,
+)
+
+
+def invalida_cache_factory(sender, **kwargs) -> None:
+    """Svuota la cache delle factory a ogni modifica della configurazione.
+
+    Attenzione a cosa questo receiver E' e a cosa NON e'. NON e' cio' che
+    garantisce RF-22: la garanzia sta nella CHIAVE della cache, che contiene
+    updated_at e index_fingerprint() e quindi cambia da se' — anche in un
+    processo che questo segnale non lo riceve mai, cioe' con piu' worker.
+    Questo receiver rende l'effetto immediato nel processo che ha salvato e
+    impedisce al dizionario di crescere a ogni modifica. Cfr. la docstring di
+    rag/services/factories.py.
+    """
+    from .services.factories import svuota_cache  # import locale: cfr. sopra
+
+    svuota_cache()
+    logger.debug("Configurazione modificata (%s): cache invalidata.", sender.__name__)
+
+
+for _modello in MODELLI_DI_CONFIGURAZIONE:
+    post_save.connect(
+        invalida_cache_factory,
+        sender=_modello,
+        dispatch_uid=f"rag.cache.salvataggio.{_modello.__name__}",
+    )
+    post_delete.connect(
+        invalida_cache_factory,
+        sender=_modello,
+        dispatch_uid=f"rag.cache.cancellazione.{_modello.__name__}",
+    )
