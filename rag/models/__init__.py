@@ -5,6 +5,8 @@ dell'app `rag`, perche' il package e' `rag.models`: l'app_label si deduce dal
 percorso, non dal file.
 """
 
+from .domain import Document, DocumentChunk, KnowledgeBase, RagPipeline
+from .logs import QueryLog, RetrievedChunk
 from .profiles import (
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_TEMPLATE,
@@ -22,9 +24,15 @@ __all__ = [
     "DEFAULT_TEMPLATE",
     "RISPOSTA_NON_DISPONIBILE",
     "ChunkingProfile",
+    "Document",
+    "DocumentChunk",
     "EmbeddingProfile",
+    "KnowledgeBase",
     "LLMProfile",
     "PromptTemplate",
+    "QueryLog",
+    "RagPipeline",
     "RetrievalProfile",
+    "RetrievedChunk",
     "TimestampedModel",
 ]

@@ -160,6 +160,36 @@ class EmbeddingProfile(TimestampedModel):
         verbose_name_plural = "profili di embedding"
         ordering = ["name"]
 
+    def clean(self) -> None:
+        super().clean()
+        if not self.pk:
+            return
+        precedente = type(self).objects.filter(pk=self.pk).first()
+        if precedente is None:
+            return
+        if (precedente.model_name, precedente.dimension) == (self.model_name, self.dimension):
+            return
+
+        from django.db.models import Q as _Q
+
+        from .domain import Document  # import locale: evita il ciclo con domain.py
+
+        # Due condizioni, non una: i documenti la cui KB punta oggi a questo
+        # profilo, e quelli che sono stati indicizzati con questo profilo anche
+        # se la KB e' stata poi ripuntata altrove. Sono i secondi ad avere
+        # vettori realmente prodotti da questo modello.
+        indicizzati = Document.objects.filter(
+            _Q(knowledge_base__embedding_profile=self) | _Q(indexed_embedding_profile=self),
+            status=Document.Status.INDEXED,
+        ).count()
+        if indicizzati:
+            raise ValidationError(
+                "Non e' possibile cambiare modello o dimensione: esistono "
+                f"{indicizzati} documenti gia' indicizzati con questo profilo, e i "
+                "vettori gia' scritti diventerebbero incoerenti. Creare un nuovo "
+                "profilo su una collezione diversa, oppure reindicizzare."
+            )
+
     def __str__(self) -> str:
         return f"{self.name} ({self.model_name}, {self.dimension}d)"
 
