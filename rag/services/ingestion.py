@@ -7,8 +7,8 @@ L'ORDINE DELLE SCRITTURE E' UNA SCELTA DI CORRETTEZZA, NON DI STILE.
 
 PGVector usa un engine SQLAlchemy con una connessione propria, distinta da
 quella di Django: non esiste alcun transaction.atomic() che comprenda
-entrambe. ARCHITECTURE §6.5 parla di «una transazione», ed e' un'imprecisione
-da correggere in T-40. Dovendo scegliere quale meta' puo' restare indietro, si
+entrambe. ARCHITECTURE §6.5 lo dichiara e descrive l'ordine scelto qui sotto.
+Dovendo scegliere quale meta' puo' restare indietro, si
 scrive PRIMA in pgvector e POI in Django:
 
 - se cade la scrittura Django restano VETTORI ORFANI: invisibili al sistema, e
@@ -204,9 +204,15 @@ def _esegui_ingestione(document: Document, inizio: float) -> EsitoIngestione:
     verify_embedding_dimension(embeddings, profilo_embedding)
     store = get_vectorstore(kb, embeddings=embeddings)
 
-    # --- 3. «In elaborazione», salvato e commesso DA SOLO -----------------
-    # Se stesse nella transazione finale nessuno lo vedrebbe mai, e l'admin
-    # mostrerebbe «In attesa» per tutta la durata del lavoro (RNF-04).
+    # --- 3. «In elaborazione», salvato PRIMA del lavoro -------------------
+    # Fuori dalla transazione finale: se stesse dentro, lo stato non esisterebbe
+    # mai come momento osservabile (RNF-04).
+    # ATTENZIONE, la garanzia non e' piena su tutte le vie d'innesco: l'admin
+    # avvolge l'intero POST in una transaction.atomic() propria
+    # (ModelAdmin.changeform_view), quindi da li' questa scrittura e' visibile
+    # solo al commit della richiesta. Da manage.py ingest, invece, e' commessa
+    # subito. Diventera' piena in P5, quando a scrivere «In elaborazione» sara'
+    # il worker e non il ciclo richiesta/risposta.
     document.status = Document.Status.PROCESSING
     document.error_message = ""
     document.save(update_fields=["status", "error_message"])

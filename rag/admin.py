@@ -306,7 +306,11 @@ class DocumentAdminForm(forms.ModelForm):
     def clean(self):
         dati = super().clean()
         file = dati.get("file")
-        kb = dati.get("knowledge_base")
+        # Su un documento esistente knowledge_base e' in sola lettura (cfr.
+        # DocumentAdmin.get_readonly_fields), quindi non arriva in cleaned_data:
+        # va ripreso dall'istanza, altrimenti sostituire il file di un documento
+        # gia' salvato aggirerebbe il controllo di deduplica.
+        kb = dati.get("knowledge_base") or getattr(self.instance, "knowledge_base", None)
         if not file or not kb:
             return dati
 
@@ -394,6 +398,30 @@ class DocumentAdmin(admin.ModelAdmin):
     @admin.display(boolean=True, description="disallineato")
     def disallineato(self, obj):
         return obj.needs_reindex
+
+    def get_readonly_fields(self, request, obj=None):
+        """La base di conoscenza si sceglie al caricamento e poi non si tocca.
+
+        Non e' una restrizione prudenziale: spostare un documento gia'
+        indicizzato lo renderebbe INVISIBILE in silenzio. I suoi vettori
+        restano nella collezione di partenza, e nulla lo segnala — il
+        fingerprint di RF-25 confronta i VALORI dei profili, non l'identita'
+        della base, quindi fra due basi configurate uguali «disallineato»
+        resta falso.
+
+        Nemmeno reindicizzare basterebbe: l'upsert di langchain-postgres
+        aggiorna `embedding`, `document` e `cmetadata` ma NON `collection_id`
+        (verificato sul sorgente della 0.0.17), quindi il vettore verrebbe
+        riscritto restando agganciato alla collezione vecchia.
+
+        Per spostare un documento si cancella e si ricarica: la cancellazione
+        porta via i vettori (RF-08) e il nuovo caricamento li scrive nella
+        collezione giusta.
+        """
+        campi = super().get_readonly_fields(request, obj)
+        if obj is not None:
+            return tuple(campi) + ("knowledge_base",)
+        return campi
 
     def save_model(self, request, obj, form, change):
         """Salva e indicizza (RF-29).

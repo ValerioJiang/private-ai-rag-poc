@@ -21,6 +21,16 @@ Perche' TRE meccanismi e non uno:
 
 In caso di errore si registra nel log e NON si risolleva: il documento e' gia'
 cancellato, e una 500 dopo un'operazione riuscita sarebbe una bugia.
+
+LIMITE RESIDUO, dichiarato. Gli id da rimuovere si ricavano dalle righe
+DocumentChunk e, se mancano, da Document.chunk_count. Resta scoperta una sola
+finestra: un documento MAI indicizzato con successo (chunk_count a zero) i cui
+vettori erano gia' stati scritti quando la scrittura Django e' fallita. In quel
+caso nulla, in nessuna delle due meta' dello schema, dice quanti vettori
+esistano, e cancellare il documento li lascia orfani. Chiuderla richiederebbe
+una DELETE per metadata (cmetadata->>'document_id') sulla connessione di
+pgvector: rumore sproporzionato alla finestra, che si apre solo se il processo
+muore fra la scrittura dei vettori e quella delle righe.
 """
 
 import logging
@@ -41,9 +51,16 @@ def raccogli_vettori(sender, instance: Document, **kwargs) -> None:
     Anche la KnowledgeBase va letta ora: se la cancellazione arriva in cascata
     dalla KB, in post_delete quella riga potrebbe non esserci piu'.
     """
-    instance._vettori_da_rimuovere = list(
-        instance.chunks.exclude(vector_id="").values_list("vector_id", flat=True)
-    )
+    ids = list(instance.chunks.exclude(vector_id="").values_list("vector_id", flat=True))
+    if not ids and instance.chunk_count:
+        # Le righe non ci sono ma il documento dichiara di essere stato
+        # indicizzato: gli id sono deterministici, quindi si ricostruiscono
+        # senza consultare l'altra meta' dello schema. E' esattamente cio' per
+        # cui sono stati scelti cosi'.
+        from .services.ingestion import vector_id
+
+        ids = [vector_id(instance.pk, o) for o in range(instance.chunk_count)]
+    instance._vettori_da_rimuovere = ids
     instance._kb_per_pulizia = instance.knowledge_base
 
 
