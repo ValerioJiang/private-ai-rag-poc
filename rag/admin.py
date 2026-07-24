@@ -5,11 +5,18 @@ E' l'interfaccia con cui si governa il sistema senza toccare il codice
 parametri che hanno effetto immediato da quelli che impongono una
 reindicizzazione (ARCHITECTURE §6.1).
 
-Nota di fase: l'azione «reindicizza» e' T-19, in P2. Qui il disallineamento si
-vede ma non si corregge, perche' il servizio di ingestione non esiste ancora.
+Nota di fase: da P2 il caricamento di un documento ne innesca l'indicizzazione
+(RF-29) e l'azione «Reindicizza i documenti selezionati» (T-19) corregge il
+disallineamento segnalato dalla colonna omonima. L'ingestione e' SINCRONA:
+diventera' asincrona in P5 (T-32), e l'unico punto da cambiare e'
+`DocumentAdmin.save_model()`.
 """
 
-from django.contrib import admin
+from pathlib import Path
+
+from django import forms
+from django.contrib import admin, messages
+from django.core.files.uploadedfile import UploadedFile
 from django.db.models import Count
 
 from .models import (
@@ -25,6 +32,8 @@ from .models import (
     RetrievalProfile,
     RetrievedChunk,
 )
+from .services.exceptions import IngestionError
+from .services.ingestion import compute_checksum, ingest_document, trova_duplicato
 
 admin.site.site_header = "Sistema RAG — amministrazione"
 admin.site.site_title = "Sistema RAG"
@@ -95,7 +104,23 @@ class EmbeddingProfileAdmin(admin.ModelAdmin):
                 ),
             },
         ),
-        ("Parametri", {"fields": ("dimension", "normalize", "batch_size")}),
+        (
+            "Parametri",
+            {
+                "fields": ("dimension", "normalize", "batch_size"),
+                "description": (
+                    "«Dimensione» e' verificata a ogni ingestione: se il modello "
+                    "produce vettori di lunghezza diversa, l'indicizzazione si "
+                    "ferma con un errore invece di corrompere l'indice in silenzio. "
+                    "«Dimensione del lotto» e' il numero di segmenti per chiamata di "
+                    "embedding, rispettato dal servizio di ingestione. "
+                    "«Normalizza» e' onorato dal modello stesso — bge-m3 restituisce "
+                    "vettori a norma 1 — e resta comunque inerte con la distanza "
+                    "cosine usata da pgvector, che e' invariante alla scala: il "
+                    "codice non lo applica, e il campo lo dichiara."
+                ),
+            },
+        ),
         TRACCIAMENTO,
     )
 
@@ -260,8 +285,61 @@ class DocumentChunkInline(admin.TabularInline):
         return False
 
 
+class DocumentAdminForm(forms.ModelForm):
+    """Deduplica al momento del caricamento (RF-09).
+
+    Perche' serve un form invece del solo vincolo di database: il ModelForm
+    dell'admin esclude dalla validazione i campi in readonly_fields, e
+    `checksum` e' fra quelli. Il vincolo document_checksum_unico_per_kb non
+    viene quindi mai verificato dalla pagina, e un duplicato arriverebbe al
+    database come IntegrityError, cioe' una 500. Accertato in P1, passo 4.5.
+
+    Il controllo qui evita anche di CREARE la riga: l'alternativa —
+    intercettare in ingest_document e marcare «Fallito» — lascerebbe in elenco
+    un documento inutile per ogni tentativo.
+    """
+
+    class Meta:
+        model = Document
+        fields = "__all__"
+
+    def clean(self):
+        dati = super().clean()
+        file = dati.get("file")
+        kb = dati.get("knowledge_base")
+        if not file or not kb:
+            return dati
+
+        # Solo sui file appena CARICATI. Su una modifica che non tocca il file,
+        # cleaned_data["file"] e' il FieldFile gia' salvato: ricalcolarne il
+        # checksum vorrebbe dire rileggere dal disco per confrontarlo con se
+        # stesso, e su Windows lascerebbe un handle aperto.
+        # isinstance(..., UploadedFile) e' il discriminante corretto: verificato
+        # che un FieldFile NON e' un UploadedFile, mentre un upload lo e'.
+        if not isinstance(file, UploadedFile):
+            return dati
+
+        checksum = compute_checksum(file)   # seek(0) incluso: senza, si
+                                            # salverebbe un file vuoto
+        esistente = trova_duplicato(kb.pk, checksum, escludi_id=self.instance.pk)
+        if esistente is not None:
+            raise forms.ValidationError(
+                {
+                    "file": (
+                        f"Questo file e' gia' presente nella base di conoscenza "
+                        f"«{kb.name}» come documento {esistente.pk} "
+                        f"({esistente}). Per rifarne l'indice usare l'azione "
+                        "«Reindicizza i documenti selezionati»."
+                    )
+                }
+            )
+        return dati
+
+
 @admin.register(Document)
 class DocumentAdmin(admin.ModelAdmin):
+    form = DocumentAdminForm
+    actions = ["reindicizza"]
     list_display = (
         "__str__", "knowledge_base", "status", "page_count", "chunk_count",
         "disallineato", "uploaded_at",
@@ -286,8 +364,11 @@ class DocumentAdmin(admin.ModelAdmin):
             {
                 "fields": ("knowledge_base", "file", "original_filename"),
                 "description": (
-                    "Il caricamento avvia l'ingestione a partire da P2 (T-17). In "
-                    "questa fase il documento resta «In attesa»."
+                    "Il salvataggio avvia immediatamente l'indicizzazione, che e' "
+                    "SINCRONA: la pagina resta in attesa per tutta la sua durata, e "
+                    "il primo embedding dopo l'avvio puo' richiedere ~20 s per il "
+                    "caricamento del modello in VRAM. Lo stesso file non puo' essere "
+                    "caricato due volte nella stessa base di conoscenza."
                 ),
             },
         ),
@@ -301,7 +382,9 @@ class DocumentAdmin(admin.ModelAdmin):
                 ),
                 "description": (
                     "Snapshot della configurazione usata. «Disallineato» segnala che i "
-                    "profili sono cambiati dopo l'indicizzazione (RF-25)."
+                    "profili sono cambiati dopo l'indicizzazione (RF-25). Per "
+                    "riallineare un documento, usare l'azione «Reindicizza i "
+                    "documenti selezionati»."
                 ),
             },
         ),
@@ -311,6 +394,68 @@ class DocumentAdmin(admin.ModelAdmin):
     @admin.display(boolean=True, description="disallineato")
     def disallineato(self, obj):
         return obj.needs_reindex
+
+    def save_model(self, request, obj, form, change):
+        """Salva e indicizza (RF-29).
+
+        L'innesco sta qui e non in un signal post_save: il servizio salva il
+        documento piu' volte — «In elaborazione», poi lo stato finale — e un
+        post_save si richiamerebbe da se'. In P5 (T-32) questa chiamata
+        diventa un enqueue e resta l'unico punto da modificare.
+        """
+        if not obj.original_filename and obj.file:
+            obj.original_filename = Path(obj.file.name).name
+        super().save_model(request, obj, form, change)
+
+        # Un documento gia' indicizzato che viene salvato senza cambiare file
+        # non va reindicizzato di nascosto: per quello c'e' l'azione.
+        if change and obj.status == Document.Status.INDEXED and "file" not in form.changed_data:
+            return
+
+        try:
+            esito = ingest_document(obj)
+        except IngestionError as exc:
+            self.message_user(request, f"Indicizzazione non riuscita: {exc}", messages.ERROR)
+        except Exception as exc:  # noqa: BLE001 - l'admin non deve mostrare una 500
+            self.message_user(
+                request,
+                f"Indicizzazione interrotta da un errore inatteso: {exc}. "
+                "Il motivo e' registrato sul documento.",
+                messages.ERROR,
+            )
+        else:
+            self.message_user(
+                request,
+                f"Documento indicizzato: {esito.chunk_count} segmenti su "
+                f"{esito.page_count} pagine in {esito.durata_s:.1f}s.",
+                messages.SUCCESS,
+            )
+
+    @admin.action(description="Reindicizza i documenti selezionati")
+    def reindicizza(self, request, queryset):
+        """RF-07 e RF-25: rielaborare senza ricaricare.
+
+        Sincrona, quindi con N documenti la richiesta dura N ingestioni. E' il
+        limite dichiarato di P2, che T-32 rimuove.
+        """
+        riusciti = falliti = 0
+        for documento in queryset:
+            try:
+                ingest_document(documento)
+                riusciti += 1
+            except Exception as exc:  # noqa: BLE001 - un fallimento non ferma gli altri
+                falliti += 1
+                self.message_user(request, f"{documento}: {exc}", messages.ERROR)
+        if riusciti:
+            self.message_user(
+                request, f"{riusciti} documenti reindicizzati.", messages.SUCCESS
+            )
+        if falliti:
+            self.message_user(
+                request,
+                f"{falliti} documenti non reindicizzati: il motivo e' sul singolo documento.",
+                messages.WARNING,
+            )
 
 
 # --------------------------------------------------------------------------
