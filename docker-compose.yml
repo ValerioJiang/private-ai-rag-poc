@@ -1,0 +1,64 @@
+# Ollama NON è containerizzato di proposito: gira nativamente sull'host per
+# avere accesso diretto alla GPU. I container lo raggiungono via
+# host.docker.internal. Cfr. ARCHITECTURE.md §2.
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ragdb}
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag}
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag} -d ${POSTGRES_DB:-ragdb}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      # dentro la rete di compose vale la porta interna, non quella pubblicata
+      POSTGRES_PORT: 5432
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    volumes:
+      - .:/app
+      - media:/app/media
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Attivo da T-32 in poi: docker compose --profile worker up
+  worker:
+    build: .
+    command: python manage.py db_worker
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    volumes:
+      - .:/app
+      - media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - worker
+
+volumes:
+  pgdata:
+  media:
