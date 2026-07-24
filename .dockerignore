@@ -1,0 +1,50 @@
+# Il Dockerfile fa `COPY . .`: senza questo file l'immagine si porta dentro
+# anche il virtualenv dell'host, la cronologia git e il .env con le credenziali.
+
+# Virtualenv dell'host: sono binari Windows, dentro un'immagine Linux non solo
+# sono inutili ma fuorvianti. Le dipendenze le installa pip dal Dockerfile.
+.venv/
+venv/
+env/
+
+# Configurazione locale: le variabili arrivano a runtime da env_file, non vanno
+# cotte in un layer dell'immagine.
+.env
+.env.local
+
+# Cronologia git
+.git/
+.gitignore
+.gitattributes
+.dockerignore
+
+# Artefatti Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test e coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Dati locali, ricreati a runtime dal volume
+media/
+staticfiles/
+*.log
+
+# Documentazione e materiale di lavoro: non servono all'applicazione
+plans/
+samples/
+.claude/
+*.md
+
+# IDE e sistema operativo
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store

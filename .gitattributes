@@ -1,0 +1,6 @@
+# I PDF di prova non hanno byte NUL nei primi 8 KB, quindi git li classifica come
+# testo e li diffa a righe. Oggi non li corrompe — il contenuto compresso gli fa
+# comunque saltare la conversione dei fine riga — ma con core.autocrlf=true su
+# Windows il comportamento dipende da un'euristica, non da una regola. Questa riga
+# lo rende deterministico.
+*.pdf binary
