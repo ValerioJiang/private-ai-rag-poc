@@ -27,9 +27,10 @@ un servizio di embedding cloud, il testo dei documenti uscirebbe comunque dal
 perimetro e il requisito sarebbe aggirato, non rispettato. Quindi anche
 l'embedding è locale.
 
-Postgres e Redis sono infrastruttura, non elaborazione da parte di terzi: un
-Postgres gestito in cloud sarebbe accettabile. Per la prova restano comunque in
-docker-compose, così chi valuta avvia tutto con un comando solo.
+Postgres è infrastruttura, non elaborazione da parte di terzi: un Postgres
+gestito in cloud sarebbe accettabile. Per la prova resta comunque in
+docker-compose, così chi valuta avvia tutto con un comando solo. Non c'è alcun
+Redis: la coda dei task vive nello stesso Postgres (cfr. §7.5).
 
 **Conclusione:** architettura interamente on-premise, ma progettata perché lo
 spostamento dell'inferenza su un server GPU proprio sia un cambio di
@@ -46,23 +47,33 @@ flowchart LR
     end
     subgraph perimeter["Perimetro privato — nessun contenuto documentale esce"]
         direction TB
-        D["Django + DRF"]
-        W["db_worker<br/>processo separato"]
-        P[("PostgreSQL<br/>pgvector + coda task")]
-        O["Ollama<br/>qwen2.5:7b-instruct"]
-        E["Embeddings<br/>multilingual-e5-small"]
+        subgraph compose["docker compose"]
+            D["Django + DRF"]
+            W["db_worker<br/>processo separato"]
+            P[("PostgreSQL<br/>pgvector + coda task")]
+        end
+        subgraph host["Host — accesso diretto alla GPU"]
+            O["Ollama<br/>qwen2.5:7b-instruct (generazione)<br/>bge-m3 (embedding)"]
+        end
     end
     C -->|HTTP| D
     D -->|enqueue| P
     P -->|polling| W
     W --> P
-    D --> O
-    D --> E
-    W --> E
+    D -->|host.docker.internal| O
+    W -->|host.docker.internal| O
 ```
 
 Un solo servizio con stato: **PostgreSQL**, che tiene dati applicativi, vettori
-e coda dei task. Ollama è un processo di inferenza senza stato persistente.
+e coda dei task. Ollama è un processo di inferenza senza stato persistente, e
+serve **entrambi** i modelli: generazione ed embedding passano dallo stesso
+servizio, quindi il progetto non ha alcuna dipendenza da torch.
+
+Ollama **non è containerizzato**: su Windows il passthrough della GPU verso
+Docker richiederebbe WSL2 e nvidia-container-toolkit. Gira nativamente
+sull'host e i container lo raggiungono via `host.docker.internal`. Resta dentro
+il perimetro privato — «privato» riguarda il confine dell'inferenza, non il
+confine di Compose.
 
 ---
 
@@ -95,7 +106,7 @@ flowchart TB
     subgraph infra["Adapter LangChain"]
         I1["PGVector"]
         I2["ChatOllama"]
-        I3["PyMuPDFLoader"]
+        I3["PyMuPDF (fitz)"]
         I4["TextSplitter"]
     end
     A1 --> S1
@@ -122,14 +133,14 @@ effetto senza riavviare il processo.
 sequenceDiagram
     participant U as Utente
     participant API as Django / DRF
-    participant Q as Celery
+    participant Q as coda task<br/>(db_worker)
     participant L as Loader + Splitter
-    participant E as Embeddings
+    participant E as Ollama bge-m3
     participant DB as Postgres + pgvector
 
     U->>API: POST /api/documents/ (PDF)
     API->>DB: Document status=pending
-    API->>Q: ingest_document.delay(id)
+    API->>Q: enqueue ingest_document(id)
     API-->>U: 202 Accepted + id
     Q->>DB: status=processing
     Q->>L: PyMuPDF → pagine → chunk
@@ -185,6 +196,18 @@ parametro che mente. Sta quindi sulla `KnowledgeBase`, e ogni `Document`
 conserva uno snapshot dei profili usati al momento dell'indicizzazione: se il
 profilo della KB cambia in seguito, l'admin può segnalare i documenti
 disallineati e proporne la reindicizzazione.
+
+**Come si rileva il disallineamento.** Due implementazioni possibili dello
+stesso principio:
+
+| | Meccanismo | Valutazione |
+|---|---|---|
+| **FK-snapshot** — *per la leggibilità* | `Document.indexed_embedding_profile` e `indexed_chunking_profile` puntano ai profili usati | Ispezionabile nell'admin: si vede *quale* profilo era attivo. Ma da solo non basta come criterio: se un profilo viene **modificato sul posto** l'FK resta uguale e il disallineamento sfugge |
+| **Fingerprint** — *per il criterio* | Un hash dei *valori* dei due profili, salvato sul `Document` e ricalcolato al confronto | Un solo campo, e coglie anche la modifica sul posto — che è il caso realistico, visto che l'admin edita i profili esistenti invece di crearne di nuovi. Ma un hash non dice *cosa* è cambiato |
+
+Si adottano **entrambi**: gli FK per la leggibilità nell'admin, il fingerprint
+come criterio effettivo di `needs_reindex`. Il costo è un `CharField` in più
+(T-09).
 
 ### 6.2 Diagramma ER
 
@@ -265,6 +288,7 @@ erDiagram
         text error_message
         int indexed_embedding_profile_id FK "snapshot"
         int indexed_chunking_profile_id FK "snapshot"
+        string index_fingerprint "hash dei valori dei profili"
         datetime uploaded_at
         datetime indexed_at
     }
@@ -409,9 +433,15 @@ cambiando una tendina, senza toccare il codice né reindicizzare.
 
 | Opzione | Pro | Contro |
 |---|---|---|
-| **`multilingual-e5-small`** ✅ | Locale; addestrato su più lingue (i PDF sono presumibilmente in italiano); 384 dimensioni = indice compatto | Gira in-process, primo caricamento lento; qualità inferiore ai modelli `large` |
-| `nomic-embed-text` via Ollama | Stesso servizio dell'LLM, nessuna dipendenza da torch | 768 dimensioni; prevalentemente inglese |
+| **`bge-m3` via Ollama** ✅ | Multilingua di prima fascia (i PDF sono in italiano); **stesso servizio dell'LLM**, quindi nessuna dipendenza da torch/sentence-transformers (~2,5 GB di wheel risparmiati); nessun caricamento in-process nel worker HTTP | 1024 dimensioni: indice più pesante; ~1,2 GB di VRAM condivisi con il modello di generazione |
+| `intfloat/multilingual-e5-small` (HuggingFace) | Buon multilingua, 384 dimensioni = indice compatto | Gira **in-process** via sentence-transformers: torch fra le dipendenze, primo caricamento lento, memoria duplicata per ogni worker |
+| `nomic-embed-text` via Ollama | Stesso servizio dell'LLM, 768 dimensioni | Prevalentemente inglese: degraderebbe il retrieval su documenti italiani |
 | Embedding cloud (OpenAI, Cohere) | Qualità superiore, nessun costo computazionale locale | Il testo dei documenti uscirebbe dal perimetro. **Contraddice il requisito** |
+
+Scelta: **`bge-m3`**. Il fattore decisivo non è la qualità pura — `e5-small` è
+adeguato — ma il fatto che passare da Ollama tiene l'intero progetto libero da
+torch e concentra l'inferenza in un solo servizio governabile dall'admin. Le
+1024 dimensioni sono il prezzo accettato, irrilevante alla scala di questa prova.
 
 ### 7.4 Strategia di chunking
 
@@ -429,22 +459,38 @@ Recursive e token-based sono entrambi esposti come valori dell'enum
 
 | Opzione | Pro | Contro |
 |---|---|---|
-| **`django.tasks` + `django-tasks-db`** ✅ | API nella stdlib da Django 6.0, **agnostica rispetto al backend**; la coda vive in Postgres, quindi nessun servizio in più; un solo datastore da avviare e da salvare | Il worker fa polling sul DB; niente scheduling né retry ricchi nell'API core; pacchetto community per il worker |
+| **`django-tasks` + `django-tasks-db`** ✅ | API **agnostica rispetto al backend**, identica a quella entrata nella stdlib con Django 6.0; la coda vive in Postgres, quindi nessun servizio in più; un solo datastore da avviare e da salvare | Il worker fa polling sul DB; niente scheduling né retry ricchi nell'API core; **due** pacchetti community e 19 migrazioni in più |
 | Celery + Redis | Standard di fatto, retry, monitoring maturo | Un servizio con stato in più; **Postgres non è un broker supportato** (il transport SQLAlchemy di kombu è di fatto abbandonato), quindi Redis diventa obbligatorio |
 | procrastinate | Nativo Postgres con `LISTEN/NOTIFY`: nessun polling, retry e locking solidi | Meno diffuso, API propria non agnostica |
 | django-q2 | Usa l'ORM come broker, semplice | Rimpiazzato in prospettiva da `django.tasks`; ecosistema più piccolo |
 | Sincrono nella request | Semplicissimo | Timeout HTTP su PDF di centinaia di pagine |
 | `threading.Thread` | Nessuna dipendenza | Nessuna durabilità: un riavvio perde il lavoro |
 
-Scelta: **`django.tasks` con backend database**. Il vantaggio decisivo non è
-tanto risparmiare un container, quanto che l'API è disaccoppiata dalla coda: il
-passaggio a Celery e Redis, se il carico lo richiedesse, è una voce di
-`settings.TASKS` e non una riscrittura del codice di ingestione. È la stessa
-tesi che regge tutto il progetto — il comportamento è configurazione — estesa al
-livello delle code.
+Scelta: **API in stile `django.tasks` con backend database**. Il vantaggio
+decisivo non è tanto risparmiare un container, quanto che l'API è disaccoppiata
+dalla coda: il passaggio a Celery e Redis, se il carico lo richiedesse, è una
+voce di `settings.TASKS` e non una riscrittura del codice di ingestione. È la
+stessa tesi che regge tutto il progetto — il comportamento è configurazione —
+estesa al livello delle code.
+
+**Precisazione verificata, contro l'assunzione più naturale.** Django 6.0
+introduce `django.tasks` nella stdlib, ma ne spedisce **solo i backend
+`immediate` e `dummy`**: in `django/tasks/backends/` non esiste alcun backend
+database, né un comando worker. Una coda durevole richiede quindi comunque un
+pacchetto esterno, e l'unico maturo — `django-tasks-db` — è costruito sopra il
+**backport** `django-tasks` (modulo `django_tasks`), non sopra `django.tasks`:
+il suo backend importa da `django_tasks.backends.base`.
+
+In pratica, su Django 6 questo significa installare il backport di un framework
+già presente nella stdlib, aggiungere `django_tasks` e `django_tasks_db` a
+`INSTALLED_APPS` e portarsi 19 migrazioni. La decisione resta valida — è pur
+sempre la coda durevole a minor costo infrastrutturale — ma la motivazione
+corretta è «coda in Postgres senza servizi in più», **non** «basta la stdlib».
 
 Con `ImmediateBackend` in fase di sviluppo il progetto gira senza worker
-separato, così chi valuta può provarlo con un solo processo.
+separato, così chi valuta può provarlo con un solo processo. È anche il motivo
+per cui l'asincronia sta in P5 e non prima: se il tempo stringe si consegna
+l'ingestione sincrona senza aver introdotto nessuna delle due dipendenze.
 
 Limiti da dichiarare: il polling introduce latenza di partenza dell'ordine del
 secondo, e a throughput elevato la tabella dei task diventerebbe un punto di
@@ -493,25 +539,90 @@ def get_callbacks(pipeline):
     return [CallbackHandler(metadata={"pipeline": pipeline.name})]
 ```
 
+**Nota di realtà:** sulla macchina di sviluppo uno stack Langfuse v3
+self-hosted è **già in esecuzione** per altri progetti. Il costo
+infrastrutturale che ne motivava l'esclusione è quindi già sostenuto *qui*, ma
+non lo sarebbe per chi valuta la prova su una macchina pulita: la decisione
+resta invariata, e l'attivazione resta dietro flag (T-35).
+
 **Nota deliberata:** anche attivando Langfuse, la sua funzione di *prompt
 management* resta inutilizzata. I prompt devono vivere in `PromptTemplate` e
 essere modificabili dall'admin Django: spostarli altrove svuoterebbe proprio il
 requisito centrale della traccia. Langfuse qui è osservabilità, mai
 configurazione.
 
+### 7.9 Come si accede ai vettori
+
+Scelto pgvector (§7.2), resta una seconda decisione, spesso data per scontata:
+**chi scrive le query vettoriali**.
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **`langchain_postgres.PGVector`** ✅ | `as_retriever()` fornisce similarity, MMR e soglia già pronti (§7.7); integrazione LCEL diretta; nessuna query SQL scritta a mano | Possiede due tabelle fuori dalle migrazioni Django (§6.3); impone la duplicazione del testo dei chunk (§6.5); ferma alla **0.0.17**; trascina **SQLAlchemy, asyncpg e psycopg-pool**, cioè un secondo ORM e un secondo driver accanto a quelli di Django |
+| `BaseRetriever` custom sull'ORM Django (`pgvector.django.CosineDistance`) | **Uno schema solo**, interamente sotto migrazioni Django; nessuna duplicazione del testo; un solo ORM e un solo driver; filtri sui metadata con l'ORM normale | MMR, `fetch_k` e `score_threshold` vanno implementati a mano; più codice da testare |
+
+Scelta: **`PGVector`**, perché la traccia premia la configurabilità del
+*retrieval* e avere MMR e soglia già pronti vale più dell'eleganza dello schema.
+
+Il costo reale è più alto di quanto sembri e va detto: il progetto finisce con
+**due ORM e due driver** verso lo stesso database. È il vero prezzo di §6.3,
+non la sola duplicazione delle tabelle.
+
+**Sullo stato della libreria (verificato):** `langchain-postgres` non è mai
+uscita dalla serie 0.0.x — l'ultima release è la **0.0.17** — ma dichiara
+`langchain-core<2.0,>=0.2.13`, quindi la **1.5.x in uso rientra nel vincolo**.
+Non c'è conflitto di risoluzione; il rischio residuo è di comportamento, non di
+dipendenze, e va confermato dallo spike (T-06).
+
+**Piano di ripiego dichiarato:** se l'integrazione si rivelasse instabile, il
+retriever custom sull'ORM è la via di uscita già valutata: costa circa mezza
+giornata, elimina i compromessi §6.3 e §6.5, riduce l'albero delle dipendenze,
+e degrada il solo MMR — che è già dichiarato come opzione, non come default.
+
+### 7.10 Come si estrae il testo dal PDF
+
+Scelto PyMuPDF (§1 del PLAN), resta da decidere **se passare dal loader di
+LangChain**. La risposta non è scontata, perché `PyMuPDFLoader` **non fa parte
+di PyMuPDF**: vive in `langchain-community`.
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **PyMuPDF diretto (`fitz`)** ✅ | ~10 righe per produrre `Document` con `page` nei metadata; controllo totale sul rilevamento del PDF senza testo (RF-10); **zero dipendenze aggiuntive** | Il codice del loader è nostro, quindi da testare |
+| `langchain_community.document_loaders.PyMuPDFLoader` | Poche righe in meno, metadata già popolati | Trascina `langchain-community` → `langchain-classic`, `aiohttp`, `requests`, `pydantic-settings`, `tenacity`: sei pacchetti per dieci righe |
+
+Scelta: **PyMuPDF diretto**, per proporzione fra beneficio e peso. È l'unica
+motivazione: il loader funzionerebbe benissimo.
+
+**Nota, contro un argomento sbagliato che è facile farsi.** Si potrebbe pensare
+di evitare `langchain-community` per tenere fuori `langsmith`, che è un client
+di tracing verso un servizio esterno. L'argomento non regge: `langsmith` è
+**dipendenza diretta di `langchain-core`**, quindi è nell'albero comunque, per
+il solo fatto di usare LangChain. La garanzia di non esfiltrazione non si
+ottiene selezionando i pacchetti — quelli che sanno parlare via rete sono la
+norma — ma controllando il **comportamento a runtime**. Cfr. §9.
+
+Conseguenza operativa: il codice di estrazione dello spike (T-06) **non va
+buttato** come il resto, ma scritto con cura fin da subito e promosso in T-14.
+
 ---
 
 ## 8. Compromessi accettati
 
-1. **La dimensione dell'embedding è un vincolo di schema.** In pgvector la
-   colonna è tipizzata `vector(384)`. Modificare `EmbeddingProfile` su una
-   `KnowledgeBase` già popolata romperebbe l'indice: il modello è quindi
-   immutabile finché esistono documenti indicizzati, ed è prevista un'azione
-   admin «ricostruisci collezione» che reindicizza tutto.
+1. **La dimensione dell'embedding è un vincolo applicativo, non di schema.**
+   `bge-m3` produce vettori a **1024** dimensioni, misurato sulla macchina in P0.
+   Le tabelle create da `langchain-postgres`, però, tipizzano la colonna come
+   `vector` **senza dimensione dichiarata** — verificato in P0 su
+   `langchain_pg_embedding`: il database non rifiuta un vettore di lunghezza
+   diversa. La coerenza va quindi garantita dal codice — profilo immutabile
+   finché esistono documenti indicizzati, e collezioni separate per profili
+   diversi — non delegata allo schema. Modificare `EmbeddingProfile` su una
+   `KnowledgeBase` già popolata romperebbe comunque il retrieval: è prevista
+   un'azione admin «ricostruisci collezione» che reindicizza tutto.
 2. **`base_url` modificabile dall'admin** è ciò che rende il sistema
    configurabile, ma consente a un amministratore di puntare l'inferenza verso
    un host arbitrario. Accettabile qui (l'admin è già un ruolo fidato); in
-   produzione andrebbe limitato a una allow-list.
+   produzione andrebbe limitato a una allow-list. È anche l'unica falla residua
+   nella garanzia di §9.
 3. **Nessuna valutazione quantitativa della qualità** (RAGAS o simili): senza un
    dataset di riferimento sarebbe un numero senza significato. I `QueryLog`
    conservano però domanda, chunk recuperati e score, cioè la materia prima per
@@ -522,7 +633,54 @@ configurazione.
    di sole immagini produce zero chunk. Il caso è rilevato e segnalato come
    errore esplicito invece di generare un documento vuoto e silenzioso.
 
-## 9. Fuori scope dichiarato
+## 9. Garanzia di non esfiltrazione
+
+RNF-01 chiede che nessun contenuto documentale lasci il perimetro. È una
+promessa che va resa **verificabile**, non solo dichiarata.
+
+Il rischio non sono le dipendenze. Pacchetti capaci di parlare via rete sono la
+norma, e `langsmith` entra comunque nell'albero come dipendenza diretta di
+`langchain-core` (§7.10): una lista di pacchetti «puliti» non dimostrerebbe
+nulla. Il rischio è che **il testo dei chunk finisca dentro una richiesta
+uscente**. I punti in cui quel testo transita davvero sono tre, non di più:
+
+| Dove | Destinazione | Controllo |
+|---|---|---|
+| Calcolo degli embedding, in ingestione | `OLLAMA_BASE_URL` | Unico host contattato. Default: `localhost:11434` |
+| Prompt di generazione — **contiene i chunk recuperati** | `OLLAMA_BASE_URL` | Idem |
+| Tracing, se attivo | LangSmith (cloud) o Langfuse | Entrambi spenti **esplicitamente**, non solo «non configurati» |
+
+Il terzo è l'unico che tradirebbe la promessa **in silenzio**, perché una
+traccia contiene il prompt completo, cioè i chunk estratti dai PDF. Due sorgenti
+possibili, entrambe da neutralizzare:
+
+- **LangSmith** si attiva da variabili d'ambiente (`LANGSMITH_TRACING` più una
+  chiave API). Ometterle non basta: se la macchina che ospita il progetto le ha
+  già impostate per altri lavori, il tracing si accende da solo. Per questo
+  `settings/base.py` forza `LANGSMITH_TRACING=false`, invece di limitarsi a non
+  impostarlo.
+- **Langfuse** sta dietro `LANGFUSE_ENABLED`, spento di default (§7.8), e anche
+  da acceso punta a un'istanza self-hosted.
+
+**Come lo verifica chi valuta, in un minuto:** si stacca la macchina dalla rete
+e si rifà la prova completa — upload di un PDF, domanda, risposta con fonti. Se
+funziona senza connettività, nessun contenuto sta uscendo. È una dimostrazione
+più forte di qualunque elenco di dipendenze.
+
+Cosa **non** è garantito, e va detto:
+
+1. `LLMProfile.base_url` è modificabile dall'admin: un amministratore può
+   puntare l'inferenza a un host arbitrario e far uscire i chunk. È il
+   compromesso §8.2 — la configurabilità che la traccia chiede *è* anche la
+   superficie di rischio. In produzione servirebbe una allow-list.
+2. Nessuna misura verso chi ha accesso al database: chunk in chiaro, e il PDF
+   originale sta in `media/`.
+3. Nessun isolamento di rete a livello di container: la garanzia è di
+   **configurazione**, non di enforcement. Un `network_mode` restrittivo sui
+   servizi applicativi la renderebbe strutturale, ed è il primo miglioramento da
+   fare se il sistema uscisse dal contesto di prova.
+
+## 10. Fuori scope dichiarato
 
 Reranking, ricerca ibrida, streaming SSE, memoria conversazionale,
 multi-tenancy, ACL a livello di chunk, OCR.

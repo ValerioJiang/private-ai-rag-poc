@@ -93,7 +93,7 @@ senza interventi sul codice**.
 
 | ID | Requisito | Fonte |
 |---|---|---|
-| **RNF-01** | **Nessun contenuto documentale deve lasciare il perimetro privato**, in nessuna fase: né in generazione, né in calcolo degli embedding, né in eventuale tracciamento | T (esteso, cfr. ARCHITECTURE §1) |
+| **RNF-01** | **Nessun contenuto documentale deve lasciare il perimetro privato**, in nessuna fase: né in generazione, né in calcolo degli embedding, né in eventuale tracciamento | T (esteso, cfr. ARCHITECTURE §1; garanzia e limiti in §9) |
 | **RNF-02** | L'ambiente deve essere avviabile in modo riproducibile con un numero minimo di comandi | D |
 | **RNF-03** | L'indicizzazione non deve bloccare il ciclo richiesta/risposta HTTP | D |
 | **RNF-04** | Gli errori devono essere gestiti, persistiti e ispezionabili, non solo registrati nei log | D |
