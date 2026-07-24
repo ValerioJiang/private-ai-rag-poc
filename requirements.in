@@ -1,0 +1,30 @@
+# Vincoli di alto livello. requirements.txt è generato da qui con pip freeze
+# dopo un'installazione reale, così le versioni bloccate sono verificate.
+
+# --- Framework ---
+Django>=6.0,<6.1
+djangorestframework>=3.16
+python-dotenv>=1.0
+
+# --- Database e vector store ---
+psycopg[binary]>=3.2
+# <0.4 non è una preferenza: langchain-postgres 0.0.17 dichiara pgvector<0.4.
+# Scriverlo qui evita che pip debba tornare indietro da pgvector 0.5.
+pgvector>=0.3,<0.4
+
+# --- LangChain ---
+langchain-core>=1.0
+langchain-text-splitters>=1.0
+langchain-ollama>=1.0
+# Nessuna 0.1: la serie si ferma alla 0.0.17. Trascina sqlalchemy, asyncpg
+# e psycopg-pool, quindi un secondo ORM e un secondo driver. Cfr. ARCHITECTURE §7.9.
+langchain-postgres>=0.0.17
+
+# --- Estrazione PDF ---
+pymupdf>=1.24
+
+# --- Client HTTP ---
+# Usato direttamente dall'health check (fase 3): arriverebbe comunque come
+# transitiva di langchain-ollama, ma il codice di prima parte non deve
+# dipendere da una transitiva.
+httpx>=0.27

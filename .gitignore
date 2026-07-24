@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Ambiente virtuale
+.venv/
+venv/
+env/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+/staticfiles/
+/media/
+
+# Configurazione locale
+.env
+.env.local
+
+# Test e coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Sistema operativo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code — impostazioni locali della macchina
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
