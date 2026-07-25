@@ -509,13 +509,31 @@ class DocumentAdmin(admin.ModelAdmin):
 
 
 class RetrievedChunkInline(admin.TabularInline):
+    """Segmenti recuperati da una interrogazione (RF-16).
+
+    «Punteggio» e' la RILEVANZA — 1 meno la distanza cosine — cioe' la stessa
+    grandezza confrontata con la soglia del profilo di recupero e mostrata
+    accanto a ogni fonte nella risposta.
+    """
+
     model = RetrievedChunk
     extra = 0
     max_num = 0
     can_delete = False
-    fields = ("rank", "chunk", "score")
+    fields = ("rank", "chunk", "documento", "pagina", "score")
     readonly_fields = fields
     ordering = ("rank",)
+
+    @admin.display(description="documento")
+    def documento(self, obj):
+        # Il segmento puo' essere sparito: RetrievedChunk.chunk e' SET_NULL
+        # perche' lo storico deve sopravvivere alla cancellazione del
+        # documento (ARCHITECTURE §6.4). Qui si vede come «—».
+        return obj.chunk.document if obj.chunk else "—"
+
+    @admin.display(description="pagina")
+    def pagina(self, obj):
+        return obj.chunk.page_number if obj.chunk else "—"
 
     def has_add_permission(self, request, obj=None):
         return False
@@ -526,7 +544,7 @@ class QueryLogAdmin(admin.ModelAdmin):
     """Sola lettura: lo storico lo scrive il sistema (P3, T-26), non l'amministratore."""
 
     list_display = (
-        "__str__", "pipeline", "user", "retrieval_ms", "generation_ms",
+        "__str__", "pipeline", "user", "fonti", "retrieval_ms", "generation_ms",
         "latency_ms", "created_at",
     )
     list_filter = ("pipeline", "created_at")
@@ -544,3 +562,11 @@ class QueryLogAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False
+
+    def get_queryset(self, request):
+        # Senza l'annotazione, «fonti» farebbe una COUNT per riga.
+        return super().get_queryset(request).annotate(_fonti=Count("retrieved_chunks"))
+
+    @admin.display(description="fonti", ordering="_fonti")
+    def fonti(self, obj):
+        return obj._fonti

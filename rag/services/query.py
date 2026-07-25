@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass, replace
 
 import httpx
+from django.db import transaction
 from langchain_core.messages import SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
@@ -50,10 +51,17 @@ from ..models import (
     PromptTemplate as ProfiloPrompt,   # alias: il nome collide con quello di
                                        # langchain_core.prompts. Cfr. la
                                        # docstring del modello.
+    QueryLog,
     RagPipeline,
     RetrievalProfile,
+    RetrievedChunk,
 )
-from .exceptions import DomandaVuota, LlmNonRaggiungibile, PipelineNonUtilizzabile
+from .exceptions import (
+    DomandaVuota,
+    LlmNonRaggiungibile,
+    PipelineNonUtilizzabile,
+    QueryError,
+)
 from .factories import get_llm, get_vectorstore
 from .ingestion import vector_id
 
@@ -397,30 +405,15 @@ class EsitoInterrogazione:
         )
 
 
-def rispondi(
-    domanda: str,
-    *,
-    pipeline: RagPipeline | None = None,
-    utente=None,
+def _esegui_interrogazione(
+    domanda: str, pipeline: RagPipeline, utente, inizio: float
 ) -> EsitoInterrogazione:
-    """Risponde a una domanda usando la configurazione della pipeline.
+    """Corpo dell'interrogazione. Il corpo della fase 3, invariato salvo:
 
-    Sincrona, come tutto il resto del sistema in questa fase.
-
-    Solleva:
-        DomandaVuota, PipelineNonUtilizzabile, ConfigurazioneNonSupportata,
-        LlmNonRaggiungibile — tutte sottoclassi di QueryError, cioe' condizioni
-        previste da riportare all'utente in forma leggibile.
+    - domanda e pipeline arrivano gia' normalizzate e risolte;
+    - `inizio` arriva dal chiamante, perche' latency_ms deve comprendere anche
+      la selezione della pipeline e la costruzione della catena.
     """
-    domanda = (domanda or "").strip()
-    if not domanda:
-        raise DomandaVuota(
-            "La domanda e' vuota: non c'e' nulla da cercare nei documenti."
-        )
-
-    inizio = time.perf_counter()
-    if pipeline is None:
-        pipeline = seleziona_pipeline()
     catena = build_chain(pipeline)
 
     # --- recupero, cronometrato a parte -----------------------------------
@@ -491,3 +484,127 @@ def rispondi(
     )
     logger.info("Interrogazione completata — %s", esito)
     return esito
+
+
+def _registra(
+    *,
+    pipeline: RagPipeline | None,
+    utente,
+    domanda: str,
+    esito: EsitoInterrogazione | None = None,
+    errore: str = "",
+) -> int | None:
+    """Scrive QueryLog e RetrievedChunk (T-26, RF-16).
+
+    Si scrive SEMPRE, anche quando l'interrogazione e' fallita: e' la stessa
+    ragione per cui l'ingestione persiste lo stato «Fallito» invece di
+    lasciarlo nei log. Il campo QueryLog.error esiste esattamente per questo, e
+    un'interrogazione fallita che non lascia traccia rende inutile RF-16
+    proprio nel caso in cui servirebbe.
+
+    Non solleva mai: un guasto della registrazione non deve trasformare una
+    risposta riuscita in un errore. Viene annotato nel log e basta.
+
+    rank parte da 1 e non da 0: e' un numero mostrato nell'admin, e la
+    posizione zero in una classifica non si scrive.
+    """
+    try:
+        with transaction.atomic():
+            log = QueryLog.objects.create(
+                pipeline=pipeline,
+                user=utente if getattr(utente, "is_authenticated", False) else None,
+                question=domanda,
+                answer=esito.risposta if esito else "",
+                retrieval_ms=esito.retrieval_ms if esito else 0,
+                generation_ms=esito.generation_ms if esito else 0,
+                latency_ms=esito.latency_ms if esito else 0,
+                error=errore,
+            )
+            if esito and esito.segmenti:
+                RetrievedChunk.objects.bulk_create(
+                    [
+                        RetrievedChunk(
+                            query_log=log,
+                            chunk_id=s.chunk_id,
+                            rank=posizione,
+                            # Si registra la RILEVANZA, la stessa grandezza
+                            # mostrata nelle fonti e confrontata con la soglia.
+                            # Registrare la distanza qui e la rilevanza altrove
+                            # significherebbe avere due numeri con lo stesso
+                            # nome e ordini opposti nello stesso database.
+                            score=s.punteggio,
+                        )
+                        for posizione, s in enumerate(esito.segmenti, start=1)
+                    ]
+                )
+        return log.pk
+    except Exception:  # noqa: BLE001 - la risposta e' gia' stata prodotta
+        logger.exception(
+            "Interrogazione non registrata nello storico: la risposta e' stata "
+            "comunque restituita al chiamante."
+        )
+        return None
+
+
+def rispondi(
+    domanda: str,
+    *,
+    pipeline: RagPipeline | str | int | None = None,
+    utente=None,
+) -> EsitoInterrogazione:
+    """Risponde a una domanda e registra l'interrogazione (RF-11 → RF-16).
+
+    Sincrona. `pipeline` accetta un'istanza, un id, un nome o None (RF-15).
+
+    Ha la stessa forma di ingest_document(): un involucro che persiste l'esito
+    — riuscito o fallito — attorno a un corpo che non se ne occupa. La
+    registrazione avviene FUORI dal percorso che puo' fallire, cosi' che il
+    motivo di un fallimento non sparisca insieme al fallimento.
+
+    Solleva:
+        QueryError: condizione prevista (domanda vuota, pipeline inesistente,
+            configurazione non realizzabile, LLM irraggiungibile). Il QueryLog
+            e' GIA' stato scritto quando l'eccezione arriva al chiamante.
+        Exception: guasto inatteso. Anch'esso registrato, e in piu' scritto nel
+            log con lo stack completo.
+    """
+    inizio = time.perf_counter()
+    domanda_normalizzata = (domanda or "").strip()
+    oggetto_pipeline: RagPipeline | None = None
+
+    try:
+        if not domanda_normalizzata:
+            raise DomandaVuota(
+                "La domanda e' vuota: non c'e' nulla da cercare nei documenti."
+            )
+        oggetto_pipeline = (
+            pipeline
+            if isinstance(pipeline, RagPipeline)
+            else seleziona_pipeline(pipeline)
+        )
+        esito = _esegui_interrogazione(
+            domanda_normalizzata, oggetto_pipeline, utente, inizio
+        )
+    except QueryError as exc:
+        _registra(
+            pipeline=oggetto_pipeline,
+            utente=utente,
+            domanda=domanda_normalizzata or str(domanda),
+            errore=str(exc),
+        )
+        logger.warning("Interrogazione rifiutata: %s", exc)
+        raise
+    except Exception as exc:
+        _registra(
+            pipeline=oggetto_pipeline,
+            utente=utente,
+            domanda=domanda_normalizzata or str(domanda),
+            errore=f"Errore inatteso ({type(exc).__name__}): {exc}",
+        )
+        logger.exception("Interrogazione fallita")
+        raise
+
+    log_id = _registra(
+        pipeline=oggetto_pipeline, utente=utente, domanda=domanda_normalizzata, esito=esito
+    )
+    return replace(esito, query_log_id=log_id)
