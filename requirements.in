@@ -6,6 +6,16 @@ Django>=6.0,<6.1
 djangorestframework>=3.16
 python-dotenv>=1.0
 
+# --- Coda dei task (P5, T-32) ---
+# django.tasks di Django 6 esiste ma spedisce solo i backend `immediate` e
+# `dummy`: nessun backend database, nessun worker. La coda durevole arriva
+# quindi dal backport, che dalla 0.12.0 e' diviso in due pacchetti — il
+# framework e il backend DB. Cfr. ARCHITECTURE §7.5.
+# Vincolo >=0.12: prima della 0.12.0 il backend DB stava dentro django-tasks,
+# e `django_tasks_db.DatabaseBackend` non esisteva come percorso importabile.
+django-tasks>=0.12
+django-tasks-db>=0.12
+
 # --- Database e vector store ---
 psycopg[binary]>=3.2
 # <0.4 non è una preferenza: langchain-postgres 0.0.17 dichiara pgvector<0.4.

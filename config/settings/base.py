@@ -33,6 +33,12 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    # Coda dei task (T-32). Servono ENTRAMBE: `django_tasks` registra i
+    # propri check e segnali, e `DatabaseBackend.check()` emette un errore
+    # esplicito se `django_tasks_db` non e' installata. Le 19 migrazioni sono
+    # tutte della seconda; la prima non ne ha alcuna.
+    "django_tasks",
+    "django_tasks_db",
     "rag",
 ]
 
@@ -120,6 +126,29 @@ CACHES = {
 
 # --- Servizio di inferenza locale ---
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# --- Coda dei task (T-32, RNF-03) ---
+# NON e' un parametro di comportamento e non viola RF-22: e' l'indirizzo di un
+# servizio, della stessa famiglia di DATABASES e OLLAMA_BASE_URL. Nessuna
+# risposta del sistema cambia perche' il task e' stato eseguito da un worker
+# invece che in linea; cambia QUANDO.
+#
+# ATTENZIONE ALL'IMPORT: Django 6.0 ha una propria `django.tasks` che legge
+# QUESTO STESSO setting ma spedisce solo i backend `immediate` e `dummy`. Nel
+# codice si importa sempre `django_tasks` (underscore), mai `django.tasks`
+# (punto): un import sbagliato non da' errore, da' un task che viene accodato
+# su un altro handler e non arriva mai al worker.
+#
+# Il ripiego serve a chi non vuole avviare un secondo processo:
+# TASKS_BACKEND=django_tasks.backends.immediate.ImmediateBackend esegue
+# l'ingestione in linea, cioe' col comportamento di P4. E' anche cio' che
+# permette a T-42 e T-43 di girare senza worker.
+TASKS = {
+    "default": {
+        "BACKEND": os.getenv("TASKS_BACKEND", "django_tasks_db.DatabaseBackend"),
+        "QUEUES": ["default"],
+    }
+}
 
 # --- Osservabilità opzionale (T-35) ---
 LANGFUSE_ENABLED = env_bool("LANGFUSE_ENABLED", False)
