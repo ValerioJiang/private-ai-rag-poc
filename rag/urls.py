@@ -4,4 +4,7 @@ from . import views
 
 urlpatterns = [
     path("health", views.health, name="health"),
+    # Le API stanno sotto /api/; health NO, perche' e' citata dal
+    # docker-compose e dal README e spostarla romperebbe entrambi.
+    path("api/documents/", views.documenti, name="api-documents"),
 ]
