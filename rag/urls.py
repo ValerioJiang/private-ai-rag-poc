@@ -7,4 +7,5 @@ urlpatterns = [
     # Le API stanno sotto /api/; health NO, perche' e' citata dal
     # docker-compose e dal README e spostarla romperebbe entrambi.
     path("api/documents/", views.documenti, name="api-documents"),
+    path("api/documents/<int:pk>/", views.documento, name="api-document"),
 ]

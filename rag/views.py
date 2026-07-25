@@ -108,7 +108,7 @@ def _base_di_conoscenza_predefinita() -> KnowledgeBase:
     return pipeline.knowledge_base
 
 
-@api_view(["POST"])
+@api_view(["GET", "POST"])
 def documenti(request):
     """POST /api/documents/ — carica un PDF e lo indicizza (T-28, RF-01, RF-27).
 
@@ -136,7 +136,15 @@ def documenti(request):
 
     Un guasto inatteso propaga e diventa 500: il documento resta «Fallito» con
     il motivo, persistito dal servizio.
+
+    GET sullo stesso percorso restituisce l'elenco (T-29): il metodo si
+    dirama qui perche' una rotta Django corrisponde a una sola vista, e
+    dividere in due funzioni imporrebbe due percorsi diversi per la stessa
+    risorsa.
     """
+    if request.method == "GET":
+        return _elenco(request)
+
     serializer = DocumentUploadSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     file = serializer.validated_data["file"]
@@ -180,3 +188,60 @@ def documenti(request):
     return Response(
         DocumentSerializer(documento).data, status=status.HTTP_201_CREATED
     )
+
+
+def _elenco(request):
+    """GET /api/documents/ — elenco con stato (T-29, RF-27).
+
+    LE select_related NON SONO UN'OTTIMIZZAZIONE FACOLTATIVA. needs_reindex
+    (RF-25) dereferenzia la base di conoscenza e i suoi due profili d'indice
+    per OGNI riga: senza di esse l'elenco costa tre query per documento. E' lo
+    stesso motivo per cui DocumentAdmin dichiara list_select_related, ed e' il
+    difetto che la verifica incrociata di P3 ha trovato nell'inline dello
+    storico — vale la pena non ripeterlo il giorno dopo averlo annotato.
+
+    Nessuna paginazione: limite dichiarato (cfr. il README). Il corpus della
+    prova sta in poche righe, e una paginazione a meta' — senza contatore,
+    senza link — sarebbe peggio della sua assenza.
+    """
+    documenti_qs = Document.objects.select_related(
+        "knowledge_base",
+        "knowledge_base__embedding_profile",
+        "knowledge_base__chunking_profile",
+    ).order_by("-uploaded_at")
+
+    stato = request.query_params.get("status")
+    if stato:
+        if stato not in Document.Status.values:
+            # 400 e non elenco vuoto: un elenco vuoto sembrerebbe una risposta,
+            # e chi ha sbagliato a scrivere lo stato non lo saprebbe mai.
+            raise ValidationError(
+                {
+                    "status": (
+                        f"Stato «{stato}» inesistente. Ammessi: "
+                        f"{', '.join(Document.Status.values)}."
+                    )
+                }
+            )
+        documenti_qs = documenti_qs.filter(status=stato)
+
+    return Response(DocumentSerializer(documenti_qs, many=True).data)
+
+
+@api_view(["GET"])
+def documento(request, pk: int):
+    """GET /api/documents/{id}/ — stato di un documento (T-29, RF-27).
+
+    E' l'endpoint con cui un client scopre che l'indicizzazione e' finita, ed e'
+    gia' scritto per P5: quando la POST diventera' asincrona e restituira' 202,
+    questa vista sara' quella da interrogare in attesa dello stato «indexed».
+    """
+    istanza = get_object_or_404(
+        Document.objects.select_related(
+            "knowledge_base",
+            "knowledge_base__embedding_profile",
+            "knowledge_base__chunking_profile",
+        ),
+        pk=pk,
+    )
+    return Response(DocumentSerializer(istanza).data)
