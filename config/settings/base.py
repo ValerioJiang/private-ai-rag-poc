@@ -133,12 +133,39 @@ LANGFUSE_ENABLED = env_bool("LANGFUSE_ENABLED", False)
 os.environ["LANGSMITH_TRACING"] = "false"
 os.environ["LANGCHAIN_TRACING_V2"] = "false"  # nome legacy, ancora letto
 
+# Autenticazione delle API (T-31, RF-27). L'ordine delle classi NON e'
+# indifferente, ed e' stato scelto su una misura.
+#
+# BasicAuthentication sta per PRIMA per due ragioni:
+#
+# 1. senza di essa, `curl -u utente:password` non funzionerebbe affatto.
+#    SessionAuthentication impone il CSRF, ma SOLO quando esiste gia' un utente
+#    di sessione (verificato sul sorgente di DRF 3.17.1: enforce_csrf() e'
+#    chiamata dopo aver trovato l'utente). Un client da riga di comando
+#    dovrebbe quindi prima ottenere un cookie di sessione e poi accompagnarlo
+#    con il token: la verifica di fase del backlog chiede invece un flusso
+#    completo via curl;
+# 2. DRF costruisce l'header WWW-Authenticate dal PRIMO autenticatore, e da
+#    quello dipende se una richiesta senza credenziali riceva 401 (con header)
+#    o 403 (senza). Per un'API 401 e' il codice giusto.
+#
+# SessionAuthentication resta seconda perche' e' cio' che rende utilizzabile
+# l'API navigabile di DRF a chi ha gia' fatto login nell'admin.
+#
+# Non si usa rest_framework.authtoken: porterebbe QUATTRO migrazioni e una
+# tabella di token che in questa prova nessuno emette ne' ruota. Basic su HTTP
+# locale e' adeguato allo scopo; su rete pubblica servirebbe TLS, ed e'
+# dichiarato nel README.
+#
+# /health resta AllowAny per decorazione esplicita: e' la sonda del
+# docker-compose, e metterla dietro autenticazione romperebbe l'health check.
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.BasicAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.AllowAny",
+        "rest_framework.permissions.IsAuthenticated",
     ],
 }
 

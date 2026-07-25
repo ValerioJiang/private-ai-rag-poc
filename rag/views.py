@@ -18,7 +18,12 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from .models import Document, KnowledgeBase, RagPipeline
-from .serializers import AskSerializer, DocumentSerializer, DocumentUploadSerializer
+from .serializers import (
+    AskSerializer,
+    DocumentSerializer,
+    DocumentUploadSerializer,
+    RagPipelineSerializer,
+)
 from .services.exceptions import IngestionError, LlmNonRaggiungibile, QueryError
 from .services.ingestion import compute_checksum, ingest_document, trova_duplicato
 from .services.query import rispondi
@@ -298,3 +303,21 @@ def ask(request):
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(esito.come_payload())
+
+
+@api_view(["GET"])
+def pipelines(request):
+    """GET /api/pipelines/ — le configurazioni disponibili (T-31, RF-23, RF-27).
+
+    Restituisce ANCHE quelle non attive, con il loro flag: RF-23 riguarda la
+    coesistenza di piu' configurazioni, e nascondere le ritirate darebbe
+    l'impressione che non esistano. Chi ne indicasse una disattivata riceve un
+    400 con il motivo, che e' informazione migliore di un elenco potato.
+
+    La predefinita compare per prima: e' quella che si usa senza indicare nulla
+    (RF-26).
+    """
+    qs = RagPipeline.objects.select_related(
+        "knowledge_base", "llm_profile", "retrieval_profile", "prompt_template"
+    ).order_by("-is_default", "name")
+    return Response(RagPipelineSerializer(qs, many=True).data)

@@ -26,7 +26,7 @@ diversi, e tradurne uno soltanto li farebbe divergere.
 from django.core.validators import FileExtensionValidator
 from rest_framework import serializers
 
-from .models import Document, KnowledgeBase
+from .models import Document, KnowledgeBase, RagPipeline
 
 
 class DocumentSerializer(serializers.ModelSerializer):
@@ -112,3 +112,45 @@ class AskSerializer(serializers.Serializer):
     pipeline = serializers.CharField(
         required=False, allow_blank=True, allow_null=True
     )
+
+
+class RagPipelineSerializer(serializers.ModelSerializer):
+    """Configurazione visibile a chi interroga (T-31, RF-23, RF-27).
+
+    Espone i VALORI che cambiano la risposta — modello, temperatura, strategia,
+    top_k, soglia — e non solo i nomi dei profili: e' cio' che permette a chi
+    confronta due pipeline (CA-7) di sapere in che cosa differiscono senza
+    aprire l'admin.
+
+    Restano fuori i parametri d'INDICE (embedding, segmentazione): non
+    riguardano chi interroga, e mostrarli accanto agli altri suggerirebbe che
+    cambiarli abbia effetto sulla richiesta successiva. Non ce l'ha: impongono
+    una reindicizzazione (RF-25).
+    """
+
+    knowledge_base = serializers.CharField(source="knowledge_base.name", read_only=True)
+    model_name = serializers.CharField(source="llm_profile.model_name", read_only=True)
+    temperature = serializers.FloatField(source="llm_profile.temperature", read_only=True)
+    search_type = serializers.CharField(source="retrieval_profile.search_type", read_only=True)
+    top_k = serializers.IntegerField(source="retrieval_profile.top_k", read_only=True)
+    score_threshold = serializers.FloatField(
+        source="retrieval_profile.score_threshold", read_only=True
+    )
+    prompt = serializers.CharField(source="prompt_template.name", read_only=True)
+
+    class Meta:
+        model = RagPipeline
+        fields = [
+            "id",
+            "name",
+            "is_active",
+            "is_default",
+            "knowledge_base",
+            "model_name",
+            "temperature",
+            "search_type",
+            "top_k",
+            "score_threshold",
+            "prompt",
+        ]
+        read_only_fields = fields
