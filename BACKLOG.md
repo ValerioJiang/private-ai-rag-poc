@@ -265,6 +265,70 @@ Dettaglio in
 | T-42 | Prova da zero su ambiente pulito (CA-1) | M | 1h | tutto |
 | T-43 | Prova **a rete staccata**: upload + domanda + risposta devono funzionare. È la dimostrazione di RNF-01 (ARCHITECTURE §9), da riportare nel README | M | 30m | T-42 |
 
+**Verifica di fase:** `pytest` passa con Ollama irraggiungibile; il README si
+legge come istruzioni di consegna e ogni criterio CA-1 → CA-10 ha un modo di
+verificarlo e un esito; l'ambiente si avvia da zero seguendo il solo README.
+
+**Stato al 25/07/2026: T-36 → T-41 chiuse. T-42 e T-43 in attesa
+dell'operatore.** Nessuna attività di P6 è stata tagliata: **T-41 e T-38 sono
+state svolte**, e non rientrano più nell'elenco dei tagli previsti («se il tempo
+disponibile è inferiore», più sotto). I due tagli del progetto restano quelli di
+P5 — T-35 e T-33.
+
+**Perimetro svolto.** La suite di test nasce in questa fase: **29 test in
+10,44 s**, in tre file — 11 su segmentazione e factory (T-36), 9 sulla macchina a
+stati dell'ingestione coi casi di errore (T-37), 9 su `POST /api/ask/` con LLM
+sostituito (T-38). Coperto **RNF-05** e abilitato **CA-10**. La verifica che dà
+valore alla suite è negativa e misurata: puntando `OLLAMA_BASE_URL` su una
+**porta chiusa** la suite passa identica (29 passed in 10,39 s), il che dimostra
+che nessun test tocca la rete — puntare a una porta chiusa è una prova più forte
+che spegnere Ollama, perché copre anche un indirizzo cablato in un percorso
+diverso da quello atteso. Due test sono stati **fatti fallire di proposito** per
+provare che possono: sostituendo la chiave della cache con il solo `pk` cade
+`test_la_cache_segue_la_configurazione_anche_senza_il_segnale`, e cambiando
+`search_type` in `SIMILARITY` cade quello sulla non-risposta sotto soglia.
+
+Fuori dai test, la fase ha chiuso il debito che il report di P5 aveva lasciato
+aperto per iscritto: `LUNGHEZZA_ESTRATTO = 300` non è più una costante nel codice
+ma `RetrievalProfile.excerpt_length` (migrazione `0005`, la prima dell'app `rag`
+da P1 — additiva, con `default=300`, reversibile). Era l'ultima violazione
+sopravvissuta di **RF-22**; la ragione della scelta e il suo limite stanno in
+ARCHITECTURE §8.6. T-41 ha prodotto `scripts/dimostrazione.ps1`, provato **tre
+volte**: ramo 202 a modello freddo (totale 211,12 s, di cui 177,9 s di sola
+generazione), ramo 409 alla seconda esecuzione consecutiva (18,16 s) e ramo
+«worker fermo», che esce con codice 1 e un messaggio che **nomina** il worker
+invece di scadere in silenzio. T-39 e T-40 hanno portato il README da appunti di
+sviluppo a istruzioni di consegna — prova guidata, criteri di accettazione,
+sezione «Test», limiti noti raccolti in un posto solo — e riallineato
+`ARCHITECTURE.md`, `REQUIREMENTS.md`, `PLAN.md` e questo file.
+
+**Un rilievo che la fase ha scoperto e che non è stato addolcito.** In
+configurazione predefinita **CA-4 non lo regge la soglia**: verificato sul
+sorgente di `_recupera()`, `score_threshold` filtra solo nella strategia
+`similarity_score_threshold`, mentre la pipeline predefinita usa `similarity`. Su
+una domanda fuori tema tornano 3 segmenti con rilevanza 0,2192 / 0,1946 / 0,1659
+e `generata: true`, e a dichiarare la non conoscenza è il **prompt di sistema**.
+Il filtro di RF-14 esiste, funziona ed è coperto da un test, ma si attiva
+scegliendo quella strategia dall'admin. Dichiarato nel README (CA-4 e limiti
+noti) e in ARCHITECTURE §7.7.
+
+**Debiti e limiti residui alla consegna.** In primo luogo **T-42 e T-43 non sono
+state eseguite**: finché non lo sono, CA-1 e CA-9 restano senza esito e RNF-01 è
+argomentato, non verificato. I posti dove scrivere l'esito sono già segnati nel
+README, in `REQUIREMENTS.md` §7 e in `ARCHITECTURE.md` §9. Restano poi, tutti
+dichiarati nella sezione «Limiti noti» del README con la loro misura: nessun
+retry automatico dei task falliti; nessun lucchetto contro il doppio
+accodamento; worker a freddo **12,4 s** contro 2,7 s a caldo; `_memoizza()` non
+protetto fra thread (costo, non correttezza — la chiave contiene i valori);
+sostituire il file di un documento lascia il precedente in `MEDIA_ROOT`; nessuna
+paginazione su `GET /api/documents/`; Basic auth su HTTP; l'admin di
+`django_tasks_db` di terze parti e **in inglese** (tenuto visibile per scelta: è
+l'unico punto in cui lo stato della coda si vede dall'interfaccia); su Windows il
+launcher del virtualenv raddoppia i processi; la tabella `DBTaskResult` cresce e
+si pota con `prune_db_task_results`; lo script di dimostrazione è **solo
+PowerShell**, e la via portabile sono i `curl` del README. Dettaglio in
+[`plans/2026-07-25-2132-P6-plan-report.md`](plans/2026-07-25-2132-P6-plan-report.md).
+
 ---
 
 ## Distribuzione nel tempo
@@ -294,9 +358,14 @@ quel caso si tagliano, **in quest'ordine**: T-35, T-33, T-41, T-38, T-32
 sono **tagliate**, per la ragione scritta nella sezione di P5. Il taglio non è
 stato indolore in un punto solo, ed è dichiarato: senza T-33 non esiste modo di
 provare una pipeline dall'interfaccia senza passare da `POST /api/ask/` o da
-`manage.py ask`. Da T-32 in poi l'elenco resta invariato: l'attività è stata
-**svolta**, non tagliata, quindi l'ingestione è asincrona e il limite noto non
-serve più.
+`manage.py ask`.
+
+**L'elenco si ferma lì.** Alla chiusura della fase 7 di P6, il 25/07/2026, i
+tre nomi successivi sono stati **svolti** e non tagliati: **T-41** (lo script di
+dimostrazione, provato tre volte), **T-38** (i nove test di `POST /api/ask/` con
+LLM sostituito) e **T-32** (l'ingestione è asincrona, quindi il limite noto che
+il taglio avrebbe imposto non serve). T-19 e T-25, ultimi due nomi dell'elenco,
+erano già chiusi rispettivamente in P2 e in P3. Nessun taglio oltre i primi due.
 
 Un limite dichiarato con consapevolezza nel README pesa molto meno di una
 funzionalità presente ma non funzionante.

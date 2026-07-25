@@ -164,18 +164,25 @@ senza interventi sul codice**.
 Verifiche dimostrabili a fine lavoro; costituiscono anche la traccia della prova
 finale.
 
-| # | Criterio | Verifica |
-|---|---|---|
-| **CA-1** | L'ambiente si avvia da zero seguendo il solo README | Esecuzione su macchina pulita |
-| **CA-2** | Un PDF caricato passa a *indicizzato* e mostra numero di pagine e segmenti | Admin |
-| **CA-3** | Una domanda sul contenuto del PDF riceve una risposta corretta con le fonti citate | `POST /api/ask/` |
-| **CA-4** | Una domanda **fuori** dal contenuto dei PDF ottiene una dichiarazione di non conoscenza, non una risposta inventata | `POST /api/ask/` |
-| **CA-5** | Modificando la temperatura o il prompt dall'admin, la risposta successiva cambia coerentemente, senza riavvio | Admin + API |
-| **CA-6** | Modificando il numero di segmenti recuperati, cambia il numero di fonti restituite | Admin + API |
-| **CA-7** | Due pipeline distinte sulla stessa base di conoscenza producono risposte diverse, selezionabili per richiesta | API |
-| **CA-8** | Un PDF corrotto o solo immagine porta il documento in stato *fallito* con motivo leggibile, senza compromettere il sistema | Admin |
-| **CA-9** | Nessuna chiamata di rete verso servizi terzi durante ingestione e interrogazione | Ispezione del traffico / assenza di credenziali esterne |
-| **CA-10** | La suite di test passa | `pytest` |
+La colonna **Esito** riporta lo stato al 25/07/2026, alla chiusura della fase 7
+di P6. Dove dice *da compilare* la prova non è ancora stata eseguita e la riga
+**non** va letta come superata. Il dettaglio di ciascuna verifica — comando,
+uscita, misure — sta nella sezione «Criteri di accettazione» del
+[README](README.md#criteri-di-accettazione), che è il documento di consegna;
+qui resta il riferimento.
+
+| # | Criterio | Verifica | Esito |
+|---|---|---|---|
+| **CA-1** | L'ambiente si avvia da zero seguendo il solo README | Esecuzione su macchina pulita | **Da compilare (T-42)** |
+| **CA-2** | Un PDF caricato passa a *indicizzato* e mostra numero di pagine e segmenti | Admin | **Superato** — API e worker (3 pagine, 3 segmenti, T-41), test `test_un_pdf_con_testo_arriva_a_indicizzato`, admin via `django.test.Client` in P2; browser a T-42 |
+| **CA-3** | Una domanda sul contenuto del PDF riceve una risposta corretta con le fonti citate | `POST /api/ask/` | **Superato** — 3 fonti citate con pagina e punteggio (T-41), test `test_una_domanda_pertinente_riceve_risposta_e_fonti` |
+| **CA-4** | Una domanda **fuori** dal contenuto dei PDF ottiene una dichiarazione di non conoscenza, non una risposta inventata | `POST /api/ask/` | **Superato, ma dal prompt di sistema e non dalla soglia** nella pipeline predefinita: cfr. ARCHITECTURE §7.7. Il filtro di RF-14 è provato dal test, e si attiva scegliendo `similarity_score_threshold` |
+| **CA-5** | Modificando la temperatura o il prompt dall'admin, la risposta successiva cambia coerentemente, senza riavvio | Admin + API | **Superato in P3** (temperatura 0 contro 1.8, processo separato, nessun riavvio) |
+| **CA-6** | Modificando il numero di segmenti recuperati, cambia il numero di fonti restituite | Admin + API | **Superato in P4 e P5** (fonti da 4 a 2 e di nuovo a 4, pid invariati) |
+| **CA-7** | Due pipeline distinte sulla stessa base di conoscenza producono risposte diverse, selezionabili per richiesta | API | **Superato in P4** (due pipeline che differiscono solo per il prompt) |
+| **CA-8** | Un PDF corrotto o solo immagine porta il documento in stato *fallito* con motivo leggibile, senza compromettere il sistema | Admin | **Superato** — P5 con `curl` vero (202 poi `failed` con motivo) e i due casi di `test_un_pdf_non_indicizzabile_…`; browser a T-42 |
+| **CA-9** | Nessuna chiamata di rete verso servizi terzi durante ingestione e interrogazione | Ispezione del traffico / assenza di credenziali esterne | **Da compilare (T-43).** Misurato finora solo sui test, che passano col client di inferenza su una porta chiusa |
+| **CA-10** | La suite di test passa | `pytest` | **Superato** — 29 test, 10,44 s; 10,39 s con `OLLAMA_BASE_URL` su porta chiusa |
 
 ## 8. Fuori ambito
 
@@ -200,7 +207,9 @@ Escluso esplicitamente, da dichiarare nelle note di consegna:
 | RF-27 | P4 — API | CA-3, CA-7 |
 | RF-28 | P2 e P3 — comandi di gestione (`manage.py ingest`, `manage.py ask`) | CA-2, CA-3 |
 | RNF-03, RNF-04 | P5 — Asincronia e rifiniture | CA-2, CA-8 |
-| RNF-02, RNF-05, RNF-06, RNF-07 | P6 — Test e documentazione | CA-1, CA-10 |
+| RF-22 (ultima costante rimossa) | P6 — `RetrievalProfile.excerpt_length`, migrazione `0005` | — |
+| RNF-05 | P6 — Suite pytest, 29 test (T-36 → T-38) | CA-10 |
+| RNF-02, RNF-06, RNF-07 | P6 — README di consegna, script di dimostrazione, prove finali (T-39 → T-43) | CA-1, CA-9 |
 | RNF-01, V-03 | Trasversale (cfr. ARCHITECTURE §1) | CA-9 |
 
 La colonna indica dove il requisito viene **realizzato**, che non sempre
@@ -229,3 +238,34 @@ sequenza `pending → processing → indexed`), e un PDF senza testo estraibile 
 **202**, e il documento passa a `failed` con `error_message` leggibile su
 `GET /api/documents/{id}/`. È l'unico cambio di contratto dell'API introdotto da
 P5 — spariti il **201** e il **422**.
+
+**RNF-05 è realizzato da P6** (T-36 → T-38), e con esso CA-10: **29 test** in
+**10,44 s**, ripartiti sulle quattro componenti che il requisito nomina —
+segmentazione e costruzione della catena dalla configurazione (11), macchina a
+stati dell'ingestione coi casi di errore (9), `POST /api/ask/` con LLM sostituito
+(9). I test **non toccano la rete**, e non è un'affermazione: la suite passa
+identica col client di inferenza puntato su una porta chiusa (29 passed in
+10,39 s). È la conseguenza diretta di ARCHITECTURE §3 — tutto ciò che parla con
+Ollama passa da `rag/services/factories.py`, quindi la sostituzione è di quattro
+nomi e non di un livello.
+
+**RF-22 è completato da P6.** Fino a P5 sopravviveva una sola costante di
+comportamento nel codice, `LUNGHEZZA_ESTRATTO = 300` in `rag/services/query.py`,
+dichiarata aperta per iscritto nel report di P5. È diventata
+`RetrievalProfile.excerpt_length` (migrazione `0005`, additiva e con lo stesso
+predefinito), modificabile dall'admin come `top_k`: cfr. ARCHITECTURE §8.6, che
+ne dichiara anche il limite — l'estratto è citazione, non cambia il contesto
+passato all'LLM.
+
+**RNF-02, RNF-06 e RNF-07 sono realizzati da P6** con il README di consegna
+(T-39), la revisione di questo documento e di `ARCHITECTURE.md` (T-40) e lo
+script `scripts/dimostrazione.ps1` (T-41), che percorre il flusso completo
+cronometrando ogni passo e fallendo con un messaggio che nomina la causa —
+per esempio il worker mai avviato — invece di un timeout muto.
+
+**CA-1 e CA-9 restano da verificare** alla data di questa revisione: sono l'esito
+di T-42 (prova da zero su ambiente pulito) e T-43 (prova a rete staccata), che
+richiedono l'operatore e non sono ancora state eseguite. Finché non lo sono,
+RNF-01 resta **argomentato e non verificato** (ARCHITECTURE §9) e RNF-02 non ha
+la sua prova. I posti dove va scritto l'esito sono segnati: §7 qui sopra, la
+sezione «Criteri di accettazione» del README e ARCHITECTURE §9.

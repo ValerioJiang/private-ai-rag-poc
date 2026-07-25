@@ -92,6 +92,37 @@ Pytest: chunking, la factory rispetta la config, macchina a stati
 dell'ingestione, `/ask` con LLM mockato. README + `ARCHITECTURE.md` con i
 compromessi.
 
+**Perimetro effettivamente svolto: T-36 → T-41; T-42 e T-43 in attesa
+dell'operatore.** Nessun taglio in questa fase.
+
+La suite è di **29 test in 10,44 s** su tre file — 11 su segmentazione e factory,
+9 sulla macchina a stati dell'ingestione, 9 su `POST /api/ask/` — e passa
+identica col client di inferenza puntato su una **porta chiusa** (29 passed in
+10,39 s): è la prova che nessun test tocca la rete, e la conseguenza diretta di
+avere un solo punto che costruisce oggetti LangChain. Coperto RNF-05, abilitato
+CA-10. Due dipendenze nuove, `pytest` e `pytest-django`, nessuna delle quali
+parla con la rete.
+
+Fuori dai test, la fase ha chiuso l'ultima costante di comportamento nel codice:
+`LUNGHEZZA_ESTRATTO = 300` è diventata `RetrievalProfile.excerpt_length`
+(migrazione `0005`, additiva, stesso predefinito), completando **RF-22**. T-41 ha
+prodotto `scripts/dimostrazione.ps1`, che percorre il flusso completo
+cronometrando ogni passo: 211,12 s a modello freddo, 18,16 s alla seconda
+esecuzione consecutiva. T-39 e T-40 hanno riscritto il README come documento di
+consegna — prova guidata, criteri di accettazione con l'esito di ciascuno, test,
+limiti noti — e riallineato gli altri documenti.
+
+**Un rilievo dichiarato e non addolcito:** in configurazione predefinita CA-4 non
+lo regge la soglia ma il prompt di sistema, perché `score_threshold` filtra solo
+nella strategia `similarity_score_threshold` e la pipeline predefinita usa
+`similarity`. Cfr. ARCHITECTURE §7.7.
+
+**T-42** (prova da zero su ambiente pulito, CA-1) e **T-43** (prova a rete
+staccata, RNF-01 e CA-9) richiedono l'operatore e non sono ancora state
+eseguite: finché non lo sono, quei due criteri restano senza esito, e i posti
+dove scriverlo sono segnati nel README, in `REQUIREMENTS.md` §7 e in
+`ARCHITECTURE.md` §9.
+
 ## Fuori scope (da dichiarare nel README come limiti noti)
 
 Reranker, ricerca ibrida BM25+vettoriale, streaming SSE, memoria

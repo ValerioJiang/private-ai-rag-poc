@@ -37,10 +37,23 @@ Verifica dei presupposti prima di qualunque lavoro: `GET /health` riporta lo
 stato di database, estensione `vector`, Ollama e coda dei task; `ollama list`
 deve mostrare `qwen2.5:7b-instruct` e `bge-m3`.
 
-**Test:** non esistono ancora (`rag/tests.py` è lo scheletro di `startapp`).
-Sono pianificati in P6 (T-36 → T-38) con pytest, che **non è ancora fra le
-dipendenze**. Finché non c'è, la verifica è quella descritta in ogni piano di
-fase: comandi reali eseguiti su dati reali, con l'output riportato nel report.
+**Test:** da P6 esistono, in `rag/tests/` — **29 test in ~10,4 s**, con `pytest`
+e `pytest-django`, configurati in `pytest.ini`.
+
+```powershell
+docker compose up -d db
+.venv\Scripts\python.exe -m pytest -q
+```
+
+Richiedono **PostgreSQL** (la migrazione `0001` fa `CREATE EXTENSION vector`) e
+**non** Ollama: tutto ciò che parla con la rete passa da `factories.py`, e i test
+sostituiscono quei nomi. La controprova è misurata — con
+`$env:OLLAMA_BASE_URL = 'http://127.0.0.1:1'` la suite passa identica. Sono in
+stile pytest, quindi **`manage.py test` non li raccoglie**. `pytest.ini` non ha
+`--reuse-db` di proposito: un database riusato non applicherebbe una migrazione
+nuova. Restano fuori dalla suite le verifiche end-to-end con Ollama vero, che
+sono quelle descritte in ogni piano di fase — comandi reali su dati reali, con
+l'output nel report — e `scripts/dimostrazione.ps1`, che le percorre tutte.
 
 `requirements.txt` è generato con `pip freeze` da `requirements.in` dopo
 un'installazione reale: modificare `requirements.in`, non il `.txt` a mano.
@@ -192,8 +205,14 @@ con un messaggio che spiega perché.
 ## Stato
 
 P0 → P5 completate (scaffolding, modelli e admin, ingestione, recupero e
-generazione, API REST, asincronia e rifiniture). Prossima e ultima:
-**P6 — test e consegna** (T-36 → T-43).
+generazione, API REST, asincronia e rifiniture). **P6 in corso:** T-36 → T-41
+chiuse — suite pytest, `excerpt_length` promosso a configurazione,
+`scripts/dimostrazione.ps1`, documentazione di consegna. **T-42** (prova da zero
+su ambiente pulito, CA-1) e **T-43** (prova a rete staccata, RNF-01 e CA-9)
+richiedono l'operatore e **non sono ancora state eseguite**: i posti dove
+scriverne l'esito sono segnati nel README, in `REQUIREMENTS.md` §7 e in
+`ARCHITECTURE.md` §9, e finché restano vuoti quei due criteri non vanno letti
+come superati.
 
 L'ingestione è **asincrona** da P5 su tutti gli inneschi HTTP e dell'admin: la
 `POST /api/documents/` risponde **202** in ~0,9 s contro i 14,53 s che costava a
@@ -204,8 +223,16 @@ solo. Sparito anche il **422** dalla `POST`: un PDF illeggibile lo scopre il
 worker, e la condizione si legge su `GET /api/documents/{id}/`.
 
 P5 ha tagliato T-33 (playground nell'admin) e T-35 (aggancio Langfuse), nell'ordine
-che `BACKLOG.md` fissa. Restano aperti e da decidere, non da dimenticare:
-`LUNGHEZZA_ESTRATTO = 300` in `query.py` è una costante di comportamento in un
-progetto che le vieta (RF-22), e `_memoizza()` non è protetto fra thread — con
-due processi non è un problema di correttezza, perché la chiave contiene i valori
-della configurazione, ma il caricamento a freddo si paga una volta per processo.
+che `BACKLOG.md` fissa; P6 non ha tagliato nulla. `LUNGHEZZA_ESTRATTO` non esiste
+più: è `RetrievalProfile.excerpt_length` dalla migrazione `0005`, e RF-22 è
+completo. Resta aperto `_memoizza()`, non protetto fra thread — con due processi
+non è un problema di correttezza, perché la chiave contiene i valori della
+configurazione, ma il caricamento a freddo si paga una volta per processo.
+
+**Un rilievo da non addolcire nella documentazione:** in configurazione
+predefinita CA-4 non lo regge la soglia. `score_threshold` filtra **solo** nella
+strategia `similarity_score_threshold` (verificato sul sorgente di `_recupera()`)
+e la pipeline predefinita usa `similarity`: su una domanda fuori tema tornano 3
+segmenti con rilevanza 0,2192 / 0,1946 / 0,1659 e `generata: true`, e a
+dichiarare la non conoscenza è il **prompt di sistema**. Il filtro esiste,
+funziona ed è coperto da un test, ma si attiva scegliendo quella strategia.

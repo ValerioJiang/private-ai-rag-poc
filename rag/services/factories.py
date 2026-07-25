@@ -16,8 +16,10 @@ NON si usa django.core.cache. LocMemCache serializza con pickle anche restando
 in-process, e nessuno dei due oggetti attraversa pickle: contengono un client
 httpx e un engine SQLAlchemy, cioe' lock di thread. Verificato —
 `cache.set()` solleva «TypeError: cannot pickle '_thread.RLock' object» per
-entrambi. Il commento in config/settings/base.py che prescrive LocMemCache per
-questo scopo e' da correggere in T-40.
+entrambi. Il commento di config/settings/base.py che prescriveva LocMemCache per
+questo scopo e' gia' stato corretto in P3 (righe 105-119): CACHES resta
+configurato perche' e' la cache generica di Django — sessioni, throttling — e
+dichiara di non essere questa.
 
 La chiave di ogni voce contiene qualcosa che cambia quando cambia la
 CONFIGURAZIONE — updated_at per i profili, index_fingerprint() per la base di

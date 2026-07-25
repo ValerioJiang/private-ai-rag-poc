@@ -702,6 +702,23 @@ pertinente conserva il suo segmento, una fuori tema non ne conserva nessuno. È
 il dato che rende CA-4 dimostrabile senza nemmeno interrogare l'LLM (§5). Il
 corpus è però piccolo: se cambia, le bande cambiano e la soglia va rimisurata.
 
+**Attenzione, e va detto perché altrimenti si legge il contrario di ciò che
+accade: nella pipeline predefinita quella soglia non filtra nulla.** La
+migrazione `0004` crea il profilo di retrieval con `search_type = "similarity"`
+e `score_threshold = 0.5`, ma — verificato sul sorgente di `_recupera()` in
+`rag/services/query.py` — il confronto con la soglia avviene **solo** nel ramo
+`similarity_score_threshold`. Con `similarity` il campo resta inerte, e i
+`top_k` segmenti arrivano all'LLM qualunque sia la loro rilevanza. La
+conseguenza è stata **misurata** in T-41: su una domanda fuori tema tornano 3
+segmenti con rilevanza 0,2192 / 0,1946 / 0,1659 e `generata: true`, e a produrre
+la dichiarazione di non conoscenza è il **prompt di sistema**, non il filtro di
+RF-14. Il filtro esiste, funziona ed è coperto da un test che verifica anche che
+l'LLM non venga invocato (`generation_ms: 0`), ma si attiva **scegliendo quella
+strategia dall'admin**. La differenza non è accademica: la strada del filtro è
+una garanzia del codice, quella del prompt dipende dal modello. Chi vuole la
+prima cambia `RetrievalProfile.search_type`, senza toccare il codice — che è poi
+il punto di RF-22.
+
 ### 7.8 Osservabilità e tracing
 
 | Opzione | Pro | Contro |
@@ -877,6 +894,29 @@ buttato** come il resto, ma scritto con cura fin da subito e promosso in T-14.
 5. **PDF scansionati non supportati.** PyMuPDF estrae testo, non fa OCR: un PDF
    di sole immagini produce zero chunk. Il caso è rilevato e segnalato come
    errore esplicito invece di generare un documento vuoto e silenzioso.
+6. **La lunghezza dell'estratto è configurazione, anche se è solo
+   presentazione.** Fino a P5 la citazione mostrata accanto a ogni fonte era
+   troncata a `LUNGHEZZA_ESTRATTO = 300`, una costante in `rag/services/query.py`
+   — l'ultima violazione sopravvissuta del principio per cui nessun parametro di
+   comportamento sta nel codice (RF-22). Il report di P5 la lasciava aperta per
+   iscritto con due esiti difendibili: promuoverla a campo, oppure dichiararla
+   scelta di presentazione e non di comportamento. P6 ha scelto il primo, ed è
+   `RetrievalProfile.excerpt_length` (migrazione `0005`). La ragione è che il
+   secondo esito costringeva a tracciare un confine — «di comportamento» contro
+   «di presentazione» — che nessuna riga di codice rende evidente: la prossima
+   costante si sarebbe difesa con lo stesso argomento, e il principio si sarebbe
+   consumato per erosione. Un campo in più nell'admin costa una migrazione
+   additiva e chiude la questione.
+   Il costo del compromesso è dichiarato nel `help_text` del campo: l'estratto
+   **non** cambia il contesto passato all'LLM, che riceve sempre il segmento
+   intero. È quindi un parametro che sta accanto a `top_k` e `score_threshold`
+   senza avere il loro peso, e un amministratore potrebbe aspettarsi che
+   accorciarlo renda la generazione più economica. Non è così.
+   Il predefinito resta **300**: è il valore con cui P3, P4 e P5 hanno misurato,
+   e la migrazione è additiva con `default=300` proprio perché nessun estratto
+   già mostrato cambi e nessuna misura riportata nei report diventi
+   incomparabile. Il minimo è 50 (`MinValueValidator`), sotto il quale la
+   citazione smette di essere leggibile.
 
 ## 9. Garanzia di non esfiltrazione
 
@@ -911,6 +951,20 @@ possibili, entrambe da neutralizzare:
 e si rifà la prova completa — upload di un PDF, domanda, risposta con fonti. Se
 funziona senza connettività, nessun contenuto sta uscendo. È una dimostrazione
 più forte di qualunque elenco di dipendenze.
+
+> **Esito della prova a rete staccata (T-43, CA-9): _da compilare_.** La prova
+> non è ancora stata eseguita, e finché questa riga resta com'è la garanzia è
+> **argomentata, non verificata**. Vanno riportati qui: la data, quali interfacce
+> sono state disattivate e come, l'uscita del ciclo completo (caricamento,
+> indicizzazione da parte del worker, domanda pertinente, domanda fuori tema), il
+> confronto dei tempi con quelli a rete attiva — **non devono differire**, ed è
+> questo l'argomento — e i log del worker, dove un tentativo di uscita fallito
+> comparirebbe come errore di risoluzione DNS o di connessione.
+>
+> Ciò che è già misurato riguarda i soli test e **non** sostituisce la prova: la
+> suite passa identica col client di inferenza puntato su una porta chiusa (29
+> passed in 10,39 s, 25/07/2026), il che dimostra che i test non toccano la rete,
+> non che il sistema in esercizio non la tocchi.
 
 Cosa **non** è garantito, e va detto:
 
