@@ -11,7 +11,7 @@ Deadline: **lunedì 27, ore 9:30**. Oggi: giovedì 23.
 | Vector store | Postgres + pgvector (`langchain_postgres.PGVector`) | Un solo datastore per dati applicativi e vettori; coerenza transazionale tra `Document` e i suoi chunk. |
 | PDF | PyMuPDF usato **direttamente** (`fitz`), non via `PyMuPDFLoader` | Veloce, conserva il numero di pagina → necessario per le citazioni. Il loader di LangChain richiederebbe `langchain-community`, cfr. ARCHITECTURE §7.10. |
 | API | Django REST Framework | La browsable API funge anche da interfaccia di prova. |
-| Async | `django-tasks` + `django-tasks-db` | L'ingestione di un PDF lungo non deve bloccare un worker HTTP. Coda su Postgres: nessun servizio con stato in più, e l'API è agnostica rispetto al backend, quindi passare a Celery è una voce di settings. **Nota:** `django.tasks` di Django 6 offre solo i backend `immediate` e `dummy`, quindi il backend DB arriva comunque dal backport. Cfr. ARCHITECTURE §7.5. |
+| Async | `django-tasks` **0.12.0** + `django-tasks-db` **0.12.0** | L'ingestione di un PDF lungo non deve bloccare un worker HTTP. Coda su Postgres: nessun servizio con stato in più, e l'API è agnostica rispetto al backend, quindi passare a Celery è una voce di settings. **Realizzato in P5:** `POST /api/documents/` da 14,53 s a **0,94 s** con **202 Accepted**; il lavoro passa a `manage.py db_worker`. **Note:** `django.tasks` di Django 6 offre solo i backend `immediate` e `dummy`, quindi il backend DB arriva comunque dal backport; e dalla **0.12.0** i backend sono usciti da `django-tasks` in pacchetti separati, da cui il vincolo `>=0.12` e le **19** migrazioni di `django_tasks_database`. Con `TASKS_BACKEND=django_tasks.backends.immediate.ImmediateBackend` il progetto gira senza worker. Cfr. ARCHITECTURE §7.5. |
 | Cache | **Dizionario di modulo** in `factories.py` | Gli oggetti memorizzati sono vivi e non serializzabili. **Corretto in P3:** era previsto `LocMemCache`, che però serializza con `pickle` anche restando in-process — verificato, `cache.set()` solleva «cannot pickle `_thread.RLock`» sia per `ChatOllama` sia per `PGVector`, che contengono un client httpx e un engine SQLAlchemy. Non è la catena a essere memorizzata, ma le sue **due parti costose** (LLM e vector store): `build_chain()` resta non cachata e rilegge la configurazione a ogni richiesta, che è ciò che rende dimostrabile RF-22. |
 
 ## Principio architetturale portante
@@ -74,9 +74,18 @@ perché `QueryLog` vuole `retrieval_ms` e `generation_ms` separati.
 **Demo:** flusso completo via curl.
 
 ### P5 — Async + rifiniture (~3h)
-Ingestione spostata su `django-tasks` con worker `db_worker`, pagina
-«playground» nell'admin per testare una pipeline inline, gestione errori.
-Opzionale, primo candidato al taglio: flag `LANGFUSE_ENABLED`.
+Ingestione spostata su `django-tasks` con worker `db_worker` (T-32) e gestione
+uniforme degli errori (T-34): un solo `EXCEPTION_HANDLER` DRF che risponde JSON
+anche sui guasti inattesi, 404 in italiano, file rimosso da `MEDIA_ROOT` con il
+documento, pid nei log, voce «coda» in `/health`.
+
+**Perimetro effettivamente svolto:** T-32 e T-34. **Tagliate** la pagina
+«playground» nell'admin (T-33) e il flag `LANGFUSE_ENABLED` / aggancio Langfuse
+(T-35), nell'ordine di taglio che il backlog fissava. La ragione è di priorità,
+non di difficoltà: T-32 chiudeva un requisito **dichiarato non soddisfatto**
+(RNF-03) e T-34 debiti già accertati nel report di P4, mentre un playground e un
+flag di tracing spento non chiudono nulla, e tutte le attività `M` rimaste stanno
+in P6.
 
 ### P6 — Test + documentazione (~3h)
 Pytest: chunking, la factory rispetta la config, macchina a stati

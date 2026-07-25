@@ -1,9 +1,11 @@
 """Traduzione fra JSON e servizi (T-28 → T-31, RF-27).
 
 Le API non sono una seconda implementazione del sistema: sono un involucro
-HTTP attorno a ingest_document() (P2) e rispondi() (P3), che contengono gia'
-deduplica, macchina a stati, recupero, fonti, non-risposta e storico. Qui si
-traduce, e nient'altro. Ogni regola di dominio che comparisse anche qui
+HTTP attorno ad accoda_indicizzazione() (P5) e rispondi() (P3), che contengono
+gia' deduplica, macchina a stati, recupero, fonti, non-risposta e storico —
+ingest_document() (P2) resta il cuore dell'ingestione, ma da P5 a chiamarla e'
+il worker, non il ciclo richiesta/risposta. Qui si traduce, e nient'altro. Ogni
+regola di dominio che comparisse anche qui
 diventerebbe una seconda copia da tenere allineata a mano, e la prima a
 divergere sarebbe quella meno esercitata.
 

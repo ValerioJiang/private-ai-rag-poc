@@ -21,14 +21,21 @@ Windows, virtualenv in `.venv`. Il database gira in Docker sulla porta **5434**
 docker compose up -d db                     # PostgreSQL + pgvector
 .venv\Scripts\python.exe manage.py migrate
 .venv\Scripts\python.exe manage.py runserver
+.venv\Scripts\python.exe manage.py db_worker      # secondo processo, da P5
 .venv\Scripts\python.exe manage.py ingest samples/manuale-dipendenti.pdf
 .venv\Scripts\python.exe manage.py ask "Quanti giorni di ferie si maturano?"
 .venv\Scripts\python.exe manage.py ask "..." --pipeline "Pipeline predefinita" --json
 ```
 
+I processi sono **due** da P5: il server accoda, il worker indicizza. Senza
+worker i documenti restano «In attesa» a tempo indeterminato — non è un guasto, e
+`/health` lo dichiara sotto la voce «coda». Per girarne uno solo:
+`TASKS_BACKEND=django_tasks.backends.immediate.ImmediateBackend` in `.env`
+riporta l'ingestione in linea, col comportamento di P4.
+
 Verifica dei presupposti prima di qualunque lavoro: `GET /health` riporta lo
-stato di database, estensione `vector` e Ollama; `ollama list` deve mostrare
-`qwen2.5:7b-instruct` e `bge-m3`.
+stato di database, estensione `vector`, Ollama e coda dei task; `ollama list`
+deve mostrare `qwen2.5:7b-instruct` e `bge-m3`.
 
 **Test:** non esistono ancora (`rag/tests.py` è lo scheletro di `startapp`).
 Sono pianificati in P6 (T-36 → T-38) con pytest, che **non è ancora fra le
@@ -97,6 +104,35 @@ Il punteggio che circola nel sistema è la **rilevanza** (`1 - distanza`, più a
 grezza di pgvector non esce mai da lì. Zero segmenti recuperati → dichiarazione
 di non conoscenza **senza interrogare l'LLM** (RF-14).
 
+### La coda: un solo punto di accodamento, il task riceve un intero
+
+`rag/tasks.py` esporta **una** funzione — `accoda_indicizzazione(documento)` —
+che porta il documento a `pending`, azzera `error_message` e accoda. Gli inneschi
+sono quattro (admin, azione «Reindicizza», `POST /api/documents/`,
+`ingest --async`) e passano tutti da lì: se ognuno scrivesse per conto proprio
+stato ed `enqueue`, la prima modifica a quella coppia di righe si dimenticherebbe
+in tre punti su quattro. È la stessa forma per cui P2 ha un solo
+`ingest_document()`.
+
+**L'import è `django_tasks`, con l'underscore.** Django 6 ha una propria
+`django.tasks` che legge lo *stesso* setting `TASKS` ma spedisce solo i backend
+`immediate` e `dummy`: un import sbagliato non dà errore, dà un task accodato su
+un altro handler che nessun worker verrà mai a prendere. Il task riceve
+`document_id`, non il documento: gli argomenti attraversano la coda come JSON, e
+fra accodamento ed esecuzione il documento può essere cambiato o cancellato — il
+worker deve leggere lo stato *attuale*, non una fotografia.
+
+Le eccezioni del task **non si inghiottono**: il worker marca la riga
+`DBTaskResult` come `FAILED` con il traceback, e `ingest_document()` ha già
+persistito stato e motivo leggibile sul documento. Sono due registrazioni con due
+destinatari — l'amministratore e chi sviluppa — e inghiottirle lascerebbe una
+coda tutta verde sopra a documenti falliti.
+
+`TASKS` sta nei settings e **non** viola RF-22: è l'indirizzo di un servizio di
+infrastruttura, come `DATABASES` e `OLLAMA_BASE_URL`. Nessuna risposta cambia
+perché il task è stato eseguito da un worker invece che in linea; cambia
+*quando*.
+
 ### Eccezioni
 
 `rag/services/exceptions.py`: `RagError` → `IngestionError` / `QueryError`, con
@@ -107,6 +143,13 @@ inattesi restano tali, con lo stack nel log. Non allargare le `except`: le
 docstring documentano quali famiglie sono state *misurate* e perché
 (p.es. `ConnectionError` builtin **e** `httpx.TransportError`, che non sono
 imparentate).
+
+Sotto tutto questo, da P5, c'è **`rag/errors.py`**: l'`EXCEPTION_HANDLER` di DRF
+che risponde **JSON sempre**, anche con `DEBUG=True` — sulle rotte `/api/` non
+c'è più la pagina di debug HTML, ed è una scelta: un client di un'API deve poter
+leggere ogni risposta, e lo stack completo resta sulla console via
+`logger.exception`. È la **rete di sicurezza, non la cura**: le viste continuano
+a tradurre da sé le condizioni previste, e a dire *quale* id non esiste.
 
 ## Convenzioni di lavoro
 
@@ -148,8 +191,21 @@ con un messaggio che spiega perché.
 
 ## Stato
 
-P0 → P3 completate (scaffolding, modelli e admin, ingestione, recupero e
-generazione). Prossima: **P4 — API REST** (T-28 → T-31): `rag/views.py` ha per
-ora il solo `/health`. Poi P5 (asincronia con `django-tasks`, il cui unico punto
-d'aggancio è `DocumentAdmin.save_model()`) e P6 (test e consegna).
-L'ingestione è **sincrona** fino a P5: è un limite dichiarato, non una svista.
+P0 → P5 completate (scaffolding, modelli e admin, ingestione, recupero e
+generazione, API REST, asincronia e rifiniture). Prossima e ultima:
+**P6 — test e consegna** (T-36 → T-43).
+
+L'ingestione è **asincrona** da P5 su tutti gli inneschi HTTP e dell'admin: la
+`POST /api/documents/` risponde **202** in ~0,9 s contro i 14,53 s che costava a
+freddo, e a lavorare è `manage.py db_worker`. Resta sincrono, **per scelta**,
+`manage.py ingest` senza `--async`: RNF-03 parla del ciclo richiesta/risposta
+HTTP, e le prove di consegna (T-42, T-43) devono poter girare con un processo
+solo. Sparito anche il **422** dalla `POST`: un PDF illeggibile lo scopre il
+worker, e la condizione si legge su `GET /api/documents/{id}/`.
+
+P5 ha tagliato T-33 (playground nell'admin) e T-35 (aggancio Langfuse), nell'ordine
+che `BACKLOG.md` fissa. Restano aperti e da decidere, non da dimenticare:
+`LUNGHEZZA_ESTRATTO = 300` in `query.py` è una costante di comportamento in un
+progetto che le vieta (RF-22), e `_memoizza()` non è protetto fra thread — con
+due processi non è un problema di correttezza, perché la chiave contiene i valori
+della configurazione, ma il caricamento a freddo si paga una volta per processo.

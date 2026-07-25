@@ -151,7 +151,7 @@ sequenceDiagram
 
     U->>API: POST /api/documents/ (PDF)
     API->>DB: Document status=pending
-    API->>Q: enqueue ingest_document(id)
+    API->>Q: enqueue indicizza_documento(id)
     API-->>U: 202 Accepted + id
     Q->>DB: status=processing
     Q->>L: PyMuPDF → pagine → chunk
@@ -164,20 +164,34 @@ Lo stato è persistito sul `Document`, quindi l'admin mostra sempre il progresso
 reale e un fallimento resta ispezionabile (`error_message`) invece di sparire
 nei log.
 
-**Stato attuale.** La coda è P5 (T-32): oggi `ingest_document()` è chiamata in
-linea dal `save_model()` dell'admin e da `manage.py ingest`, quindi
-l'ingestione è **sincrona** e il chiamante attende per tutta la sua durata
-(RNF-03 non ancora soddisfatto). Il diagramma resta il bersaglio, e il servizio
-è scritto perché il passaggio alla coda cambi solo *chi* lo invoca.
+Il diagramma è il sistema da P5 (T-32). Gli inneschi dell'ingestione — admin,
+azione «Reindicizza», `POST /api/documents/` — passano tutti da
+`rag.tasks.accoda_indicizzazione()`, che porta il documento a «In attesa» e
+accoda; `ingest_document()` la chiama il worker. L'unica via sincrona rimasta è
+`manage.py ingest` senza `--async`, dove attendere è esattamente ciò che si
+vuole (RNF-03 parla del ciclo richiesta/risposta HTTP, di cui un comando di
+gestione non fa parte).
 
-Finché l'innesco è sincrono, «in elaborazione» è però uno stato **osservabile
-solo a metà**: il servizio lo scrive prima del lavoro e fuori dalla transazione
-finale, ma l'admin avvolge l'intero POST in una transazione propria
-(`ModelAdmin.changeform_view`), quindi da lì la scrittura diventa visibile solo
-al commit della richiesta — cioè a lavoro già concluso. Da `manage.py ingest`,
-che non ha quella transazione attorno, lo stato è invece visibile durante
-l'indicizzazione. È l'asimmetria che la coda di T-32 rimuove: sarà il worker a
-scrivere quello stato, fuori dal ciclo richiesta/risposta.
+Misure prese con `curl` contro un `runserver` vero: l'upload rispondeva in
+**14,53 s** a freddo e **4,25 s** a caldo quando indicizzava in linea, e da P5
+risponde **202** in **0,94 s** — di cui circa 0,9 s sono l'avvio del processo
+`curl`, la connessione e l'autenticazione Basic, costanti e misurati anche sul
+409 (0,92 s). Il lavoro non è sparito: lo stesso documento è costato **12,4 s**
+al worker a freddo e **2,7 s** a caldo.
+
+Da qui «In elaborazione» diventa uno stato **osservabile davvero**, e non più
+solo a metà: lo scrive il worker in autocommit, fuori da qualunque transazione
+di richiesta. Verificato dal vivo con un `GET /api/documents/{id}/` ogni 150 ms
+durante un'indicizzazione, che ha visto la sequenza `pending → processing →
+indexed`. Prima di P5 l'admin avvolgeva l'intero POST in una transazione propria
+(`ModelAdmin.changeform_view`) e quella scrittura diventava visibile solo al
+commit, cioè a lavoro già concluso.
+
+Il rovescio dichiarato: se **nessun worker è in esecuzione** il documento resta
+«In attesa» a tempo indeterminato — misurato, ancora `pending` dopo 15 s — senza
+alcun fallimento. È il modo più probabile di sbagliare l'avvio del progetto, ed
+è la ragione per cui `/health` porta la voce «coda» (T-34), che dice quanti task
+attendono e chi deve lavorarli.
 
 ---
 
@@ -582,21 +596,71 @@ pacchetto esterno, e l'unico maturo — `django-tasks-db` — è costruito sopra
 **backport** `django-tasks` (modulo `django_tasks`), non sopra `django.tasks`:
 il suo backend importa da `django_tasks.backends.base`.
 
+**Versioni installate: `django-tasks` 0.12.0 e `django-tasks-db` 0.12.0**, cioè
+**due** pacchetti e non uno. Fino alla 0.11 i backend `db` e `rq` stavano dentro
+`django-tasks`; dalla 0.12.0 sono distribuzioni separate (dichiarato nel README
+del pacchetto: «Prior to `0.12.0`, `django-tasks-db` and `django-tasks-rq` were
+also included»). È la ragione del vincolo `>=0.12` in `requirements.in`: prima
+di quella versione il percorso `django_tasks_db.DatabaseBackend` non esisteva.
+Servono **entrambe** le app in `INSTALLED_APPS` — `django_tasks` registra i
+propri check e segnali, e `DatabaseBackend.check()` emette un errore esplicito
+se `django_tasks_db` non è installata. Le **19 migrazioni** (`0001` → `0019`)
+sono tutte della seconda, sotto il `label` `django_tasks_database`, che è
+diverso dal nome del modulo; `django_tasks` non ha alcuna directory
+`migrations/`.
+
 In pratica, su Django 6 questo significa installare il backport di un framework
 già presente nella stdlib, aggiungere `django_tasks` e `django_tasks_db` a
 `INSTALLED_APPS` e portarsi 19 migrazioni. La decisione resta valida — è pur
 sempre la coda durevole a minor costo infrastrutturale — ma la motivazione
 corretta è «coda in Postgres senza servizi in più», **non** «basta la stdlib».
 
+**Il check di `django.tasks` si registra sempre, e non fa danno** — misurato
+alla 0.12.0, e correggo qui una nota precedente che diceva il contrario («si
+registra solo se lo importa il codice applicativo»). Dopo `django.setup()`,
+`"django.tasks" in sys.modules` è **`True`**, e a importarlo sono due terze
+parti, entrambe deliberatamente: `django_tasks_db/compat.py:2`
+(`from django.tasks.base import Task as DjangoTask`, dentro un `try/except
+ImportError`, per `TASK_CLASSES = (Task, DjangoTask)` — il backend DB accetta
+sia i `Task` del backport sia quelli della stdlib) e `django_stubs_ext/patch.py:112`.
+`django/tasks/checks.py` istanzia quindi il backend da `settings.TASKS` e ne
+chiama `check()`: poiché `create_connection()` si limita a `import_string()`,
+ottiene la stessa `django_tasks_db.backend.DatabaseBackend`, il cui `check()`
+restituisce lista vuota. Due check girano, entrambi passano, `manage.py check`
+resta a 0 issues. **La regola operativa non cambia**: nel nostro codice si
+importa sempre `django_tasks` (underscore), mai `django.tasks` (punto), perché
+i due handler costruiscono **istanze separate** e un task accodato sull'uno non
+arriverebbe mai al worker dell'altro.
+
 Con `ImmediateBackend` in fase di sviluppo il progetto gira senza worker
-separato, così chi valuta può provarlo con un solo processo. È anche il motivo
-per cui l'asincronia sta in P5 e non prima: se il tempo stringe si consegna
-l'ingestione sincrona senza aver introdotto nessuna delle due dipendenze.
+separato, così chi valuta può provarlo con un solo processo: basta
+`TASKS_BACKEND=django_tasks.backends.immediate.ImmediateBackend` in `.env`. È
+anche il motivo per cui l'asincronia sta in P5 e non prima: se il tempo stringe
+si consegna l'ingestione sincrona senza aver introdotto nessuna delle due
+dipendenze.
 
 Limiti da dichiarare: il polling introduce latenza di partenza dell'ordine del
 secondo, e a throughput elevato la tabella dei task diventerebbe un punto di
 contesa. Per un carico fatto di poche ingestioni di PDF è ampiamente
 sufficiente; per una coda ad alta frequenza servirebbe un broker vero.
+
+Un limite **misurato** che nasce dal secondo processo: il worker è **a freddo al
+primo task** e paga il caricamento del modello di embedding una volta per
+processo — `_memoizza()` di `factories.py` è un dizionario di modulo, e ogni
+processo ha il proprio. Misura: **12,4 s** per un PDF di 4 pagine al primo task
+di un worker appena avviato, **2,7 s** per lo stesso lavoro a caldo. Un worker
+riavviato ripaga quel costo. Non è correttezza — la chiave della cache contiene
+i *valori* della configurazione, quindi RF-22 vale in entrambi i processi — è
+latenza, e va detta a chi cronometra la prima ingestione.
+
+Altri due limiti dichiarati e non risolti: **nessun retry automatico** dei task
+falliti (un documento fallito si rielabora con l'azione «Reindicizza», che
+esiste già) e **nessun lucchetto** contro il doppio accodamento sullo stesso
+documento. Il secondo è una scelta: gli id dei vettori sono deterministici e
+l'upsert è `ON CONFLICT (id) DO UPDATE`, quindi due esecuzioni parallele
+sprecano lavoro senza perdere correttezza, mentre un `select_for_update()` sul
+documento introdurrebbe un modo nuovo di restare bloccati — un worker morto a
+metà lascerebbe il documento «In elaborazione» per sempre.
 
 ### 7.6 Dove vive la configurazione
 

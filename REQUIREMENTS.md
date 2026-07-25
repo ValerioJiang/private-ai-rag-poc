@@ -47,7 +47,7 @@ senza interventi sul codice**.
 | **RF-05** | I segmenti devono essere **indicizzati** in una struttura che ne permetta il recupero per similarità semantica | T |
 | **RF-06** | Lo stato di elaborazione di ogni documento deve essere osservabile (`in attesa`, `in elaborazione`, `indicizzato`, `fallito`) e, in caso di errore, deve riportare il motivo | D |
 | **RF-07** | Deve essere possibile **rielaborare** un documento già caricato, senza doverlo ricaricare | D |
-| **RF-08** | L'eliminazione di un documento deve rimuovere anche i suoi segmenti e i relativi vettori | D |
+| **RF-08** | L'eliminazione di un documento deve rimuovere anche i suoi segmenti, i relativi vettori e il file caricato da `MEDIA_ROOT` | D |
 | **RF-09** | Il caricamento dello stesso file nella stessa base di conoscenza deve essere rilevato e segnalato, non duplicato | S |
 | **RF-10** | Un PDF privo di testo estraibile (scansione senza OCR) deve produrre un errore esplicito, non un documento indicizzato vuoto | S |
 
@@ -209,3 +209,23 @@ perché è lì che nascono i campi dell'admin, ma diventano veri in P3: prima di
 `build_chain()` non esisteva nulla che rileggesse quella configurazione, quindi
 non c'era comportamento da cambiare senza riavvio. CA-5, CA-6 e CA-7 compaiono
 per la stessa ragione anche nella riga di P3, dove sono stati dimostrati.
+
+**RNF-03 è realizzato e misurato da P5** (T-32), e non è più il requisito
+aperto che era dalla chiusura di P2. L'indicizzazione è passata su una coda
+durevole in Postgres (`django-tasks` + `django-tasks-db`) servita da un processo
+separato, `manage.py db_worker`. Misure con `curl` contro un `runserver` vero:
+`POST /api/documents/` costava **14,53 s** a freddo e **4,25 s** a caldo quando
+indicizzava in linea, e ora risponde **202 Accepted** in **0,94 s**, di cui circa
+0,9 s sono il sovraccarico costante del client. Il controllo che rende la misura
+non ambigua è **negativo**: a worker spento il documento resta «in attesa» —
+verificato ancora `pending` dopo 15 s — invece di essere indicizzato di nascosto
+nel ciclo richiesta/risposta.
+
+Conseguenza su RF-06 e RF-10: lo stato «in elaborazione» diventa osservabile
+davvero, perché lo scrive il worker fuori da ogni transazione di richiesta
+(verificato con un `GET /api/documents/{id}/` ogni 150 ms, che ha visto la
+sequenza `pending → processing → indexed`), e un PDF senza testo estraibile non
+è più scoperto dalla risposta HTTP ma dal worker: la `POST` risponde comunque
+**202**, e il documento passa a `failed` con `error_message` leggibile su
+`GET /api/documents/{id}/`. È l'unico cambio di contratto dell'API introdotto da
+P5 — spariti il **201** e il **422**.

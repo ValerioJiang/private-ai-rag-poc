@@ -39,7 +39,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # Attivo da T-32 in poi: docker compose --profile worker up
+  # Attivo da P5 (T-32): docker compose --profile worker up --build. Il --build
+  # serve perche' requirements.txt e' cambiato — django-tasks e django-tasks-db.
+  # Senza questo processo i documenti restano «In attesa» a tempo indeterminato:
+  # non e' un guasto, e /health lo dichiara sotto la voce «coda».
   worker:
     build: .
     command: python manage.py db_worker

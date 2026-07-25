@@ -197,6 +197,61 @@ sola richiesta, che è il limite inferiore per i timeout dei client. Dettaglio i
 | T-34 | Gestione errori uniforme e logging strutturato | S | 1h | T-30 |
 | T-35 | Punto d'aggancio Langfuse dietro flag, spento di default | C | 1h | T-26 |
 
+**Verifica di fase** (il backlog non ne scriveva una: se l'è data il piano):
+un upload via `curl` risponde in meno di un secondo con **202** e stato «in
+attesa», un worker separato porta il documento a «indicizzato», e
+`GET /api/documents/{id}/` lo mostra — più il **controllo negativo**, cioè che a
+worker spento il documento **resti** «in attesa» invece di fallire in silenzio.
+
+**Stato: completata il 25/07/2026.** **T-32 e T-34 chiuse; T-33 e T-35
+tagliate.** Il taglio segue l'ordine che questo stesso backlog fissa più sotto
+(«si tagliano, in quest'ordine: T-35, T-33, …») e la ragione è di priorità: T-32
+chiudeva **RNF-03**, dichiarato non soddisfatto dalla chiusura di P2, e T-34 i
+tre debiti accertati nel report di P4, mentre un playground e un flag di tracing
+spento non chiudono alcun requisito. Sono le due sole attività `C` di P5, e tutte
+le attività `M` rimaste stanno in P6.
+
+Verifica di fase superata nei suoi otto punti, da 4.1 a 4.8, con `curl` vero
+contro **tre processi** — `runserver --noreload`, `db_worker --no-reload` e il
+client. La misura che giustifica la fase: `POST /api/documents/` rispondeva
+**14,53 s** a freddo e **4,25 s** a caldo, e ora risponde **202** in **0,94 s**
+(di cui ~0,9 s di sovraccarico costante del client, misurato anche sul 409 a
+0,92 s); il worker ha poi indicizzato lo stesso documento in **12,4 s** a freddo
+e **2,7 s** a caldo. Il **controllo negativo** è passato: a worker spento il
+documento è ancora `pending` dopo 15 s e `/health` dichiara «1 in attesa»;
+riacceso il worker, viene preso. Lo stato «in elaborazione» è stato **osservato**
+con un `GET` ogni 150 ms (`pending → processing → indexed`), non dedotto. Un PDF
+senza testo dà **202** e poi `failed` con il motivo (RF-10 dopo il cambio di
+contratto), deduplica (409) e autenticazione (401 con `WWW-Authenticate`,
+`/health` anonimo) non sono regredite, e `POST /api/ask/` recupera dal server ciò
+che il **worker** ha scritto, citando fonti con documento, pagina, estratto e
+punteggio (RF-13, CA-3). RF-22 è stato verificato nella forma più forte finora:
+`top_k` cambiato da un **terzo** processo porta le fonti da **4 a 2 e di nuovo a
+4** con i pid di server *e* worker invariati — nessuno dei due si riavvia.
+
+Coperti **RNF-03** e il completamento di **RNF-04** e **RF-08** (la cancellazione
+porta via anche il file da `MEDIA_ROOT`, che `FileField` non tocca). Ripetuti
+senza regressioni RF-01, RF-06, RF-07, RF-09, RF-10, RF-13, RF-14, RF-22, RF-25,
+RF-27, RF-29. **Nessuna migrazione dell'app `rag`**; le **19** migrazioni
+`django_tasks_database` sono di terze parti. **Due** dipendenze nuove di primo
+livello — `django-tasks==0.12.0` e `django-tasks-db==0.12.0` — più una
+transitiva, `django-stubs-ext==6.0.7`; nessuna parla con la rete (RNF-01).
+
+**Un cambio di contratto dell'API**, il solo della fase: `POST /api/documents/`
+risponde **202 Accepted** invece di 201 e **il 422 non esiste più**, perché un
+PDF illeggibile è scoperto dal worker quando la risposta è già partita. La
+condizione resta osservabile su `GET /api/documents/{id}/`.
+
+Debiti e limiti dichiarati, verso P6: nessun retry automatico dei task falliti
+(si usa «Reindicizza»); nessun lucchetto contro il doppio accodamento; il worker
+fa polling con intervallo di 1 s, e al **primo task di ogni processo** paga il
+caricamento del modello di embedding (12,4 s misurati contro 2,7 s a caldo);
+sostituire il file di un documento esistente lascia il precedente in
+`MEDIA_ROOT`; l'admin di `django_tasks_db` è di terze parti e **in inglese**; la
+tabella dei task cresce e si pota con `manage.py prune_db_task_results`.
+Dettaglio in
+[`plans/2026-07-25-1958-P5-plan-report.md`](plans/2026-07-25-1958-P5-plan-report.md).
+
 ## P6 — Test e consegna
 
 | ID | Attività | Pri | Stima | Dipende da |
@@ -234,6 +289,14 @@ la domenica notte è la parte che si nota di più.
 Con circa 15 ore effettive restano realizzabili tutte le `M` più poche `S`. In
 quel caso si tagliano, **in quest'ordine**: T-35, T-33, T-41, T-38, T-32
 (l'ingestione resta sincrona, dichiarandolo come limite noto), T-19, T-25.
+
+**Applicato ai primi due nomi alla chiusura di P5, il 25/07/2026:** T-35 e T-33
+sono **tagliate**, per la ragione scritta nella sezione di P5. Il taglio non è
+stato indolore in un punto solo, ed è dichiarato: senza T-33 non esiste modo di
+provare una pipeline dall'interfaccia senza passare da `POST /api/ask/` o da
+`manage.py ask`. Da T-32 in poi l'elenco resta invariato: l'attività è stata
+**svolta**, non tagliata, quindi l'ingestione è asincrona e il limite noto non
+serve più.
 
 Un limite dichiarato con consapevolezza nel README pesa molto meno di una
 funzionalità presente ma non funzionante.
