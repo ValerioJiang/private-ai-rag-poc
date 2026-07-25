@@ -157,6 +157,37 @@ sessione, ma senza rendering visivo. Dettaglio in
 
 **Verifica di fase:** flusso completo via `curl`, dall'upload alla risposta.
 
+**Stato: completata il 25/07/2026.** T-28 → T-31 chiuse. Verifica di fase
+superata nei suoi dieci punti, da (a) a (j), e questa volta con `curl` vero
+contro un `runserver` vero: è il limite che P2 e P3 avevano dichiarato — la
+verifica passava per il test client, che non tocca la rete — e P4 lo chiude.
+L'upload porta il documento a *indicizzato* in 14,5 s a freddo e 4,3 s a caldo
+(RF-01); lo stesso file è respinto con 409 **senza lasciare file orfani**
+(RF-09); `POST /api/ask/` cita documento, pagina, estratto e punteggio (RF-13,
+CA-3) e una domanda fuori tema riceve la dichiarazione di non conoscenza
+(RF-14, CA-4). Coperti RF-01, RF-06, RF-09, RF-11 → RF-16, RF-27, RF-30.
+Nessuna migrazione, nessuna dipendenza nuova.
+
+Il punto centrale della traccia è stato verificato in una forma **più forte** che
+in P3: cambiando `top_k` da un altro processo con il server acceso — PID
+verificato identico prima, durante e dopo — le fonti sono passate da **4 a 1 e
+di nuovo a 4**, senza riavvio (RF-22, CA-6). Il ritorno al valore iniziale
+esclude che il numero dipendesse dai segmenti disponibili. Due pipeline che
+differiscono **solo** per il prompt danno risposte diverse sulle stesse fonti
+(CA-7), e l'ordine degli autenticatori — `BasicAuthentication` prima di
+`SessionAuthentication` — è stato verificato sulla causa e non sull'esito: due
+viste identiche salvo quell'ordine danno 401 con `WWW-Authenticate` la prima e
+403 senza header la seconda.
+
+Debiti accertati, tutti verso P6: `GET /api/documents/{id}/` risponde **in
+inglese** su id inesistente («No Document matches the given query.») perché
+`get_object_or_404` non passa da `gettext` e DRF ne propaga l'argomento
+scavalcando il proprio «Non trovato.»; cancellare un `Document` rimuove i
+vettori ma **non** il file da `MEDIA_ROOT`, che `FileField` non tocca; e la
+prima richiesta di ogni processo resta a freddo — misurati **30,2 s** su una
+sola richiesta, che è il limite inferiore per i timeout dei client. Dettaglio in
+[`plans/2026-07-25-0900-P4-plan-report.md`](plans/2026-07-25-0900-P4-plan-report.md).
+
 ## P5 — Asincronia e rifiniture
 
 | ID | Attività | Pri | Stima | Dipende da |
