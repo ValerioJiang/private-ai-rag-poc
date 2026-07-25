@@ -417,6 +417,31 @@ class EsitoInterrogazione:
     def fonti(self) -> list[dict]:
         return [s.come_fonte() for s in self.segmenti]
 
+    def come_payload(self) -> dict:
+        """L'esito come JSON, per i due ingressi che lo espongono.
+
+        Sta qui e non nel comando ne' nella vista perche' RF-27 e RF-28 chiedono
+        le stesse operazioni da HTTP e da riga di comando: due dizionari scritti
+        a mano in due file diversi divergerebbero alla prima aggiunta di un
+        campo, e a divergere per primo sarebbe quello meno usato. Da P4
+        `manage.py ask --json` e POST /api/ask/ restituiscono esattamente lo
+        stesso oggetto.
+
+        I `segmenti` NON compaiono: sono oggetti interni, e cio' che va esposto
+        e' `fonti`, cioe' la forma di RF-13.
+        """
+        return {
+            "domanda": self.domanda,
+            "risposta": self.risposta,
+            "pipeline": self.pipeline_nome,
+            "generata": self.generata,
+            "fonti": self.fonti,
+            "retrieval_ms": self.retrieval_ms,
+            "generation_ms": self.generation_ms,
+            "latency_ms": self.latency_ms,
+            "query_log_id": self.query_log_id,
+        }
+
     def __str__(self) -> str:
         return (
             f"{len(self.segmenti)} fonti, {self.latency_ms} ms "

@@ -8,4 +8,5 @@ urlpatterns = [
     # docker-compose e dal README e spostarla romperebbe entrambi.
     path("api/documents/", views.documenti, name="api-documents"),
     path("api/documents/<int:pk>/", views.documento, name="api-document"),
+    path("api/ask/", views.ask, name="api-ask"),
 ]

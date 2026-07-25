@@ -91,3 +91,24 @@ class DocumentUploadSerializer(serializers.Serializer):
     knowledge_base = serializers.PrimaryKeyRelatedField(
         queryset=KnowledgeBase.objects.all(), required=False, allow_null=True
     )
+
+
+class AskSerializer(serializers.Serializer):
+    """Ingresso di POST /api/ask/ (T-30, RF-15).
+
+    `domanda` e' allow_blank=True DI PROPOSITO: cfr. l'intestazione del modulo.
+    La domanda vuota e' una condizione di dominio, e la respinge rispondi() con
+    DomandaVuota. trim_whitespace=False per la stessa ragione: la
+    normalizzazione la fa il servizio, con .strip(), e farla anche qui
+    significherebbe che due punti diversi decidono che cosa sia «vuoto».
+
+    `pipeline` accetta nome o id, la stessa forma dell'opzione --pipeline
+    (RF-15). CharField converte in stringa anche un intero JSON (verificato in
+    pianificazione), quindi {"pipeline": 3} e {"pipeline": "3"} sono
+    equivalenti e seleziona_pipeline() li risolve entrambi.
+    """
+
+    domanda = serializers.CharField(allow_blank=True, trim_whitespace=False)
+    pipeline = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )

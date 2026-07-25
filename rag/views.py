@@ -18,9 +18,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from .models import Document, KnowledgeBase, RagPipeline
-from .serializers import DocumentSerializer, DocumentUploadSerializer
-from .services.exceptions import IngestionError
+from .serializers import AskSerializer, DocumentSerializer, DocumentUploadSerializer
+from .services.exceptions import IngestionError, LlmNonRaggiungibile, QueryError
 from .services.ingestion import compute_checksum, ingest_document, trova_duplicato
+from .services.query import rispondi
 
 logger = logging.getLogger(__name__)
 
@@ -245,3 +246,55 @@ def documento(request, pk: int):
         pk=pk,
     )
     return Response(DocumentSerializer(istanza).data)
+
+
+@api_view(["POST"])
+def ask(request):
+    """POST /api/ask/ — risponde citando le fonti (T-30, RF-11 → RF-16, RF-27).
+
+    E' un involucro attorno a rispondi(): recupero, soglia, non-risposta, fonti
+    e storico stanno gia' nel servizio, e questa vista non ne rifa' nemmeno una
+    parte. In particolare NON scrive il QueryLog — quando un'eccezione arriva
+    qui, la riga esiste gia', anche per le richieste rifiutate.
+
+    La mappatura dei codici e' la risposta alla domanda che P3 aveva lasciato
+    aperta:
+
+    - 400 condizioni previste imputabili alla richiesta: domanda vuota,
+      pipeline inesistente o disattivata, configurazione non realizzabile;
+    - 503 LlmNonRaggiungibile. E' un QueryError, ma NON e' colpa di chi ha
+      chiesto: il servizio di inferenza a valle non risponde. Un 400 manderebbe
+      il client a correggere una domanda che era giusta, e 503 e' anche il
+      codice che un bilanciatore sa leggere;
+    - 500 tutto il resto, con lo stack nel log. Ci rientra ollama.ResponseError
+      — la 500 di out-of-memory incontrata davvero in P3 — che non e' un guasto
+      di trasporto: il servizio HA risposto, dicendo di non farcela.
+
+    L'ORDINE DELLE CLAUSOLE E' SIGNIFICATIVO: LlmNonRaggiungibile e'
+    sottoclasse di QueryError, quindi la sua clausola deve stare PRIMA, o non
+    sara' mai raggiunta. Invertirle non romperebbe nessuna verifica scritta con
+    domande pertinenti.
+    """
+    dati = AskSerializer(data=request.data)
+    dati.is_valid(raise_exception=True)
+
+    try:
+        esito = rispondi(
+            dati.validated_data["domanda"],
+            # `or None` e non `.get(...)`: una stringa vuota significa «non
+            # l'ho indicata», e seleziona_pipeline() la tratterebbe comunque
+            # cosi', ma passare None rende esplicito quale ramo si vuole.
+            pipeline=dati.validated_data.get("pipeline") or None,
+            # AnonymousUser diventa None dentro _registra() senza sollevare
+            # (verificato in P3): request.user si passa cosi' com'e' in
+            # entrambi i casi.
+            utente=request.user,
+        )
+    except LlmNonRaggiungibile as exc:
+        return Response(
+            {"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    except QueryError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(esito.come_payload())

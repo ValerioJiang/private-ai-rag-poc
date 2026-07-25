@@ -63,27 +63,15 @@ class Command(BaseCommand):
         if options["json"]:
             self.stdout.write(
                 json.dumps(
-                    {
-                        "domanda": esito.domanda,
-                        "risposta": esito.risposta,
-                        "pipeline": esito.pipeline_nome,
-                        "generata": esito.generata,
-                        "fonti": esito.fonti,
-                        "retrieval_ms": esito.retrieval_ms,
-                        "generation_ms": esito.generation_ms,
-                        "latency_ms": esito.latency_ms,
-                        "query_log_id": esito.query_log_id,
-                    },
-                    # ensure_ascii RESTA VERO, ed e' la seconda meta' della
-                    # stessa correzione. Con ensure_ascii=False le accentate
-                    # escono grezze e Django le scrive nella codepage della
-                    # console: su Windows il redirect produceva un file cp1252
-                    # («e' » -> byte 0xe8), che nessun analizzatore JSON legge,
-                    # perche' JSON e' UTF-8 per specifica. Misurato:
-                    # «'utf-8' codec can't decode byte 0xe8 in position 93».
+                    esito.come_payload(),
+                    # ensure_ascii RESTA VERO. Con ensure_ascii=False le
+                    # accentate escono grezze e Django le scrive nella codepage
+                    # della console: su Windows il redirect produceva un file
+                    # cp1252 («e' » -> byte 0xe8), che nessun analizzatore JSON
+                    # legge, perche' JSON e' UTF-8 per specifica. Misurato in
+                    # P3: «'utf-8' codec can't decode byte 0xe8 in position 93».
                     # Con l'escape \\uXXXX l'uscita e' ASCII pura, quindi valida
-                    # in qualunque codifica di console. La leggibilita' persa
-                    # non manca a nessuno: la modalita' per gli umani e' l'altra.
+                    # in qualunque codifica di console.
                     ensure_ascii=True,
                     indent=2,
                 )
