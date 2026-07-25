@@ -289,6 +289,18 @@ class RetrievalProfile(TimestampedModel):
         validators=[MinValueValidator(0.0), MaxValueValidator(1.0)],
         help_text="Usata solo dalla strategia «Similarita' con soglia» (RF-14).",
     )
+    excerpt_length = models.PositiveIntegerField(
+        "lunghezza dell'estratto",
+        default=300,
+        validators=[MinValueValidator(50)],
+        help_text=(
+            "Caratteri della citazione mostrata accanto a ogni fonte. NON "
+            "cambia il contesto passato all'LLM, che riceve sempre il "
+            "segmento intero: e' una scelta di leggibilita' della risposta. "
+            "Sta qui e non nel codice perche' RF-22 non ammette valori di "
+            "comportamento fuori dal database."
+        ),
+    )
 
     class Meta:
         verbose_name = "profilo di recupero"

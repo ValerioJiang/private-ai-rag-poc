@@ -152,7 +152,15 @@ class ChunkingProfileAdmin(admin.ModelAdmin):
 
 @admin.register(RetrievalProfile)
 class RetrievalProfileAdmin(admin.ModelAdmin):
-    list_display = ("name", "search_type", "top_k", "fetch_k", "lambda_mult", "score_threshold")
+    list_display = (
+        "name",
+        "search_type",
+        "top_k",
+        "fetch_k",
+        "lambda_mult",
+        "score_threshold",
+        "excerpt_length",
+    )
     list_filter = ("search_type",)
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
@@ -171,7 +179,13 @@ class RetrievalProfileAdmin(admin.ModelAdmin):
         (
             "Parametri",
             {
-                "fields": ("top_k", "fetch_k", "lambda_mult", "score_threshold"),
+                "fields": (
+                    "top_k",
+                    "fetch_k",
+                    "lambda_mult",
+                    "score_threshold",
+                    "excerpt_length",
+                ),
                 "description": (
                     "La «soglia di punteggio» si confronta con la RILEVANZA "
                     "(1 − distanza cosine), non con la distanza grezza di "
@@ -181,7 +195,9 @@ class RetrievalProfileAdmin(admin.ModelAdmin):
                     "documento ma pagina sbagliata 0,35–0,46; domanda fuori "
                     "tema 0,15–0,26. Il valore predefinito 0,5 cade fra la "
                     "prima e la seconda banda. La soglia si applica DOPO "
-                    "«segmenti recuperati»: alzarla puo' restituire zero fonti."
+                    "«segmenti recuperati»: alzarla puo' restituire zero fonti. "
+                    "La lunghezza dell'estratto riguarda la sola CITAZIONE "
+                    "mostrata: il segmento intero va comunque all'LLM."
                 ),
             },
         ),

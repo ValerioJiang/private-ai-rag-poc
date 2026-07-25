@@ -22,6 +22,16 @@ anche la giustificazione della soglia predefinita di 0,5:
     stesso documento, altra pagina        0,35-0,46
     domanda fuori tema                    0,15-0,26
 
+L'ESTRATTO E' CONFIGURAZIONE, DA P6. Fino a P5 la lunghezza della citazione era
+LUNGHEZZA_ESTRATTO = 300 in questo modulo: una costante di comportamento in un
+progetto che le vieta (RF-22), lasciata aperta per iscritto dal report di P5.
+Ora e' RetrievalProfile.excerpt_length, cioe' configurazione di QUERY come le
+altre. Il valore predefinito resta 300 perche' e' quello con cui P3, P4 e P5
+hanno misurato: cambiarlo insieme al luogo in cui vive renderebbe non
+confrontabili le misure gia' riportate nei report. Il taglio riguarda la sola
+CITAZIONE: il testo intero resta in SegmentoRecuperato.testo e va all'LLM,
+quindi nessuna risposta cambia al variare del numero.
+
 PERCHE' NON as_retriever(). Un VectorStoreRetriever restituisce list[Document]
 e i punteggi si perdono, ma RF-13 (fonti col punteggio) e RF-16
 (RetrievedChunk.score, FloatField non nullo) li richiedono. Si usano quindi i
@@ -67,12 +77,6 @@ from .ingestion import vector_id
 
 logger = logging.getLogger(__name__)
 
-# Quanto testo di un segmento finisce nelle fonti mostrate all'utente. Il testo
-# INTERO resta in SegmentoRecuperato.testo e va all'LLM: questo taglio riguarda
-# solo la citazione, che deve stare in una riga di terminale o in un JSON
-# leggibile.
-LUNGHEZZA_ESTRATTO = 300
-
 
 def rilevanza(distanza: float) -> float:
     """Converte la distanza cosine di pgvector in un punteggio di similarita'.
@@ -105,6 +109,13 @@ class SegmentoRecuperato:
     ordinal, perche' e' deterministico. E' la stessa proprieta' che in P2
     permetteva di cancellare i vettori a righe DocumentChunk gia' sparite,
     usata qui nella direzione opposta.
+
+    lunghezza_estratto VIAGGIA NEL SEGMENTO invece di essere riletta dal
+    profilo dentro `estratto`: il dataclass e' frozen e non conosce la
+    pipeline, e una property che interrogasse il database aggiungerebbe una
+    query per fonte a ogni serializzazione. replace() in collega_ai_chunk()
+    conserva il campo senza modifiche, quindi il valore letto una sola volta in
+    esegui_ricerca() e' quello con cui la citazione viene tagliata.
     """
 
     testo: str
@@ -115,13 +126,14 @@ class SegmentoRecuperato:
     document_id: int | None
     pagina: int | None
     ordinale: int | None
+    lunghezza_estratto: int   # da RetrievalProfile.excerpt_length (RF-22)
     chunk_id: int | None = None
 
     @property
     def estratto(self) -> str:
-        if len(self.testo) <= LUNGHEZZA_ESTRATTO:
+        if len(self.testo) <= self.lunghezza_estratto:
             return self.testo
-        return self.testo[:LUNGHEZZA_ESTRATTO] + "…"
+        return self.testo[: self.lunghezza_estratto] + "…"
 
     def come_fonte(self) -> dict:
         """La fonte come la vede chi legge la risposta (RF-13).
@@ -142,8 +154,16 @@ class SegmentoRecuperato:
         }
 
 
-def _da_documento_langchain(documento, distanza: float) -> SegmentoRecuperato:
-    """Traduce un (Document, distanza) di LangChain in un SegmentoRecuperato."""
+def _da_documento_langchain(
+    documento, distanza: float, lunghezza_estratto: int
+) -> SegmentoRecuperato:
+    """Traduce un (Document, distanza) di LangChain in un SegmentoRecuperato.
+
+    `lunghezza_estratto` arriva dal chiamante — cioe' da
+    RetrievalProfile.excerpt_length — e non ha un valore predefinito qui: un
+    default a questo livello sarebbe la costante di comportamento che P6 ha
+    tolto (RF-22), rimessa in un posto dove nessuno andrebbe a cercarla.
+    """
     md = documento.metadata or {}
     document_id = md.get("document_id")
     ordinale = md.get("ordinal")
@@ -164,6 +184,7 @@ def _da_documento_langchain(documento, distanza: float) -> SegmentoRecuperato:
         document_id=document_id,
         pagina=md.get("page"),
         ordinale=ordinale,
+        lunghezza_estratto=lunghezza_estratto,
     )
 
 
@@ -222,7 +243,10 @@ def esegui_ricerca(store, profilo: RetrievalProfile, domanda: str) -> list[Segme
         # il quinto segmento della collezione l'avrebbe superata.
         grezzi = store.similarity_search_with_score(domanda, k=profilo.top_k)
 
-    segmenti = [_da_documento_langchain(d, punteggio) for d, punteggio in grezzi]
+    segmenti = [
+        _da_documento_langchain(d, punteggio, profilo.excerpt_length)
+        for d, punteggio in grezzi
+    ]
 
     if profilo.search_type == RetrievalProfile.SearchType.THRESHOLD:
         prima = len(segmenti)
