@@ -196,13 +196,23 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    # Ogni risposta dell'API e' JSON, compresi i guasti inattesi: cfr.
+    # rag/errors.py, che spiega perche' vale anche con DEBUG=True.
+    "EXCEPTION_HANDLER": "rag.errors.gestore_eccezioni",
 }
 
+# Da P5 i processi sono DUE — il server e `manage.py db_worker` — e nei log si
+# confondono: stesso formato, stessa console se li si raccoglie insieme. Il pid
+# e' il minimo che permette di dire chi ha scritto una riga. Niente formato
+# JSON: nessun collettore lo leggerebbe, e sarebbe cerimonia.
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "simple": {"format": "{levelname} {asctime} {name} {message}", "style": "{"},
+        "simple": {
+            "format": "{levelname} {asctime} [pid {process}] {name} {message}",
+            "style": "{",
+        },
     },
     "handlers": {
         "console": {"class": "logging.StreamHandler", "formatter": "simple"},
@@ -210,5 +220,11 @@ LOGGING = {
     "root": {"handlers": ["console"], "level": "INFO"},
     "loggers": {
         "rag": {"handlers": ["console"], "level": "DEBUG", "propagate": False},
+        # Il worker registra qui l'avvio, la presa in carico e l'esito di ogni
+        # task: senza questa riga il suo output avrebbe un formato diverso da
+        # quello dell'applicazione, perche' il comando db_worker aggiunge un
+        # handler proprio quando non ne trova.
+        "django_tasks": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "django_tasks_db": {"handlers": ["console"], "level": "INFO", "propagate": False},
     },
 }

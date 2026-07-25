@@ -12,10 +12,9 @@ import logging
 import httpx
 from django.conf import settings
 from django.db import connection
-from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
@@ -66,6 +65,35 @@ def _check_ollama() -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _check_coda() -> tuple[bool, str]:
+    """Stato della coda dei task (T-32, T-34).
+
+    NON FA MAI FALLIRE L'HEALTH CHECK, ed e' deliberato: una coda con dei task
+    in attesa e' il funzionamento normale, non un guasto, e /health e' la sonda
+    del docker-compose. Il valore di questo controllo e' diagnostico —
+    distinguere «worker occupato» da «worker mai avviato», che sara' il modo
+    piu' probabile di sbagliare l'avvio del progetto.
+
+    Il backend si legge da settings e non da `default_task_backend`: quello e'
+    un ConnectionProxy, e `type(...)` restituirebbe il proxy invece del
+    backend vero.
+    """
+    percorso = settings.TASKS["default"]["BACKEND"]
+    if not percorso.endswith("DatabaseBackend"):
+        return True, f"{percorso.rsplit('.', 1)[-1]}: esecuzione in linea, nessun worker necessario"
+    try:
+        from django_tasks_db.models import DBTaskResult
+
+        in_attesa = DBTaskResult.objects.ready().count()
+        in_corso = DBTaskResult.objects.running().count()
+    except Exception as exc:  # noqa: BLE001 - l'health check riporta, non gestisce
+        return False, str(exc)
+    return True, (
+        f"coda su database: {in_attesa} in attesa, {in_corso} in esecuzione "
+        f"(le lavora `manage.py db_worker`)"
+    )
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health(request):
@@ -73,6 +101,7 @@ def health(request):
         "database": _check_database(),
         "pgvector": _check_pgvector(),
         "ollama": _check_ollama(),
+        "coda": _check_coda(),
     }
     healthy = all(ok for ok, _ in checks.values())
     return Response(
@@ -233,18 +262,28 @@ def _elenco(request):
 def documento(request, pk: int):
     """GET /api/documents/{id}/ — stato di un documento (T-29, RF-27).
 
-    E' l'endpoint con cui un client scopre che l'indicizzazione e' finita, ed e'
-    gia' scritto per P5: quando la POST diventera' asincrona e restituira' 202,
-    questa vista sara' quella da interrogare in attesa dello stato «indexed».
+    E' l'endpoint con cui un client scopre che l'indicizzazione e' finita, e da
+    P5 e' l'UNICO: la POST risponde 202 e non attende piu'. Si interroga
+    finche' `status` non e' «indexed» oppure «failed» — nel secondo caso
+    `error_message` porta il motivo (RF-10, RNF-04).
+
+    NotFound esplicita e non get_object_or_404: quest'ultima solleva Http404
+    con un messaggio in inglese che DRF propaga scavalcando la propria
+    traduzione, ed era il difetto cosmetico accertato in P4. Il messaggio
+    scritto qui dice anche QUALE id non esiste, che il testo generico non
+    direbbe.
     """
-    istanza = get_object_or_404(
+    istanza = (
         Document.objects.select_related(
             "knowledge_base",
             "knowledge_base__embedding_profile",
             "knowledge_base__chunking_profile",
-        ),
-        pk=pk,
+        )
+        .filter(pk=pk)
+        .first()
     )
+    if istanza is None:
+        raise NotFound(f"Nessun documento con id {pk}.")
     return Response(DocumentSerializer(istanza).data)
 
 
