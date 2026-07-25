@@ -283,15 +283,27 @@ def build_prompt(profilo: ProfiloPrompt) -> ChatPromptTemplate:
     )
 
 
-def seleziona_pipeline(riferimento: str | int | None = None) -> RagPipeline:
+def seleziona_pipeline(
+    riferimento: RagPipeline | str | int | None = None,
+) -> RagPipeline:
     """Sceglie la pipeline dell'interrogazione (RF-15).
 
-    Tre forme accettate, nell'ordine: id numerico, nome esatto, oppure —
-    se il riferimento manca — la pipeline predefinita (RF-26).
+    Quattro forme accettate: un'istanza gia' risolta dal chiamante, un id
+    numerico, un nome esatto, oppure — se il riferimento manca — la pipeline
+    predefinita (RF-26).
 
     Una pipeline NON ATTIVA e' rifiutata anche se richiesta esplicitamente:
     is_active esiste per poter ritirare una configurazione senza cancellarla,
     e onorarla solo quando comodo la svuoterebbe di significato.
+
+    IL CONTROLLO SU is_active STA QUI, IN FONDO, E VALE PER TUTTE E QUATTRO LE
+    FORME. Fino alla verifica incrociata di P3 rispondi() risolveva da se' il
+    caso dell'istanza, saltando questa funzione per intero: una pipeline
+    disattivata passata come oggetto veniva eseguita lo stesso. Misurato, non
+    dedotto. Nessun chiamante di allora lo colpiva — ask.py passa una stringa o
+    None — ma P4 risolvera' la pipeline dall'URL e passera' proprio l'oggetto,
+    cioe' e' l'unico consumatore che sarebbe caduto nel buco. Chi aggiunge una
+    quinta forma la aggiunga QUI: la regola deve restare in un punto solo.
     """
     base = RagPipeline.objects.select_related(
         "knowledge_base",
@@ -302,7 +314,14 @@ def seleziona_pipeline(riferimento: str | int | None = None) -> RagPipeline:
         "prompt_template",
     )
 
-    if riferimento is None or riferimento == "":
+    if isinstance(riferimento, RagPipeline):
+        # Gia' risolta dal chiamante. NON si rilegge dal database: l'istanza e'
+        # sua, puo' averla presa con le proprie select_related, e rileggerla
+        # scarterebbe in silenzio l'oggetto che ha passato. Si applica pero'
+        # il controllo in fondo, che e' l'unica cosa che questa funzione deve
+        # garantire in tutti i casi.
+        pipeline = riferimento
+    elif riferimento is None or riferimento == "":
         pipeline = base.filter(is_default=True).first()
         if pipeline is None:
             disponibili = ", ".join(
@@ -577,11 +596,10 @@ def rispondi(
             raise DomandaVuota(
                 "La domanda e' vuota: non c'e' nulla da cercare nei documenti."
             )
-        oggetto_pipeline = (
-            pipeline
-            if isinstance(pipeline, RagPipeline)
-            else seleziona_pipeline(pipeline)
-        )
+        # Anche un'istanza gia' pronta passa di qui: seleziona_pipeline() e' il
+        # punto unico in cui is_active viene fatto valere, e scavalcarlo per
+        # comodita' era il difetto chiuso dalla verifica incrociata di P3.
+        oggetto_pipeline = seleziona_pipeline(pipeline)
         esito = _esegui_interrogazione(
             domanda_normalizzata, oggetto_pipeline, utente, inizio
         )

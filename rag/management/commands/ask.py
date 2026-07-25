@@ -38,12 +38,19 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        self.stdout.write(
-            self.style.WARNING(
-                "L'interrogazione e' sincrona. Il primo embedding e la prima "
-                "generazione dopo l'avvio possono richiedere alcune decine di "
-                "secondi per il caricamento dei modelli in VRAM."
-            )
+        # L'avviso va su STDERR e non su stdout, a differenza di quello di
+        # `ingest`. Il motivo e' --json: RF-28 chiede comandi utilizzabili per
+        # l'automazione, e un avviso stampato prima del payload rende l'uscita
+        # non analizzabile — misurato, `ask … --json | python -m json.tool`
+        # falliva con «Expecting value: line 1 column 1». Su stderr l'avviso
+        # resta visibile a chi guarda il terminale in entrambe le modalita', e
+        # stdout porta il solo esito. `ingest` non ha questo problema perche'
+        # non ha un'uscita analizzabile da rispettare.
+        self.stderr.write(
+            "L'interrogazione e' sincrona. Il primo embedding e la prima "
+            "generazione dopo l'avvio possono richiedere alcune decine di "
+            "secondi per il caricamento dei modelli in VRAM.",
+            style_func=self.style.WARNING,
         )
         try:
             esito = rispondi(options["domanda"], pipeline=options["pipeline"])
@@ -67,7 +74,17 @@ class Command(BaseCommand):
                         "latency_ms": esito.latency_ms,
                         "query_log_id": esito.query_log_id,
                     },
-                    ensure_ascii=False,
+                    # ensure_ascii RESTA VERO, ed e' la seconda meta' della
+                    # stessa correzione. Con ensure_ascii=False le accentate
+                    # escono grezze e Django le scrive nella codepage della
+                    # console: su Windows il redirect produceva un file cp1252
+                    # («e' » -> byte 0xe8), che nessun analizzatore JSON legge,
+                    # perche' JSON e' UTF-8 per specifica. Misurato:
+                    # «'utf-8' codec can't decode byte 0xe8 in position 93».
+                    # Con l'escape \\uXXXX l'uscita e' ASCII pura, quindi valida
+                    # in qualunque codifica di console. La leggibilita' persa
+                    # non manca a nessuno: la modalita' per gli umani e' l'altra.
+                    ensure_ascii=True,
                     indent=2,
                 )
             )
