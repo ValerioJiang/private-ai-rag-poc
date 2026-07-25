@@ -96,13 +96,25 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# La catena LangChain costruita da build_chain() contiene oggetti Python vivi
-# (client di inferenza, connessioni): non è serializzabile, quindi la cache
-# deve essere in-process. Cfr. PLAN.md, «Decisioni prese», riga Cache.
+# ATTENZIONE — questa cache NON è quella degli oggetti LangChain, e il commento
+# che stava qui diceva il contrario.
+#
+# L'intento originale era memorizzare qui la catena costruita da build_chain().
+# Non è realizzabile: LocMemCache serializza con pickle anche restando
+# in-process, e né ChatOllama né PGVector attraversano pickle — contengono un
+# client httpx e un engine SQLAlchemy, cioè lock di thread. Verificato in P3:
+# `cache.set()` solleva «TypeError: cannot pickle '_thread.RLock' object» per
+# entrambi. La memoizzazione vive quindi in un dizionario di modulo dentro
+# rag/services/factories.py, che ne spiega la chiave; e non è la catena a essere
+# memorizzata, ma le sue due parti costose, perché build_chain() deve rileggere
+# la configurazione a ogni richiesta (RF-22).
+#
+# Il backend resta configurato perché è la cache generica di Django, utile a
+# sessioni e throttling: è il suo scopo, non il nostro.
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "rag-chain-cache",
+        "LOCATION": "django-generica",
     }
 }
 

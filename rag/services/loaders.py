@@ -1,7 +1,9 @@
 """Estrazione del testo dai PDF (T-14, RF-03, RF-10).
 
-Promosso da scripts/spike_rag.py::load_pdf(), che ARCHITECTURE §7.10 indica
-come l'unico codice dello spike da non buttare via.
+Promosso da load_pdf() dello spike di P0, che ARCHITECTURE §7.10 indicava come
+l'unico codice dello spike da non buttare via. Lo spike — scripts/spike_rag.py
+— e' stato cancellato alla chiusura di P3, quando manage.py ask lo ha
+sostituito: questo modulo e' cio' che ne resta.
 
 Si importa `pymupdf` e non `fitz`: dalla 1.24 il nome canonico del modulo e'
 `pymupdf` e `fitz` resta come alias di compatibilita'. Verificato sulla 1.28.0

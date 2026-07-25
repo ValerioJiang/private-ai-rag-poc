@@ -4,9 +4,9 @@ Il gemello di `manage.py ingest` sul lato lettura. Serve alle stesse due cose:
 automazione, e prova senza browser — che in P3 vuol dire prima che le API di
 P4 esistano.
 
-Sostituisce scripts/spike_rag.py, che viene cancellato con questa fase: da qui
-in avanti non esiste piu' alcun percorso che risponda a una domanda con
-parametri scritti nel codice.
+Ha sostituito scripts/spike_rag.py, cancellato alla chiusura di P3: da qui in
+avanti non esiste piu' alcun percorso che risponda a una domanda con parametri
+scritti nel codice.
 """
 
 import json
