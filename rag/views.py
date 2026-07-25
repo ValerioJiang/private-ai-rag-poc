@@ -1,8 +1,10 @@
 """Health check e API REST (RF-27).
 
-Le viste sono involucri HTTP attorno ai servizi: ingest_document() per il
-caricamento, rispondi() per l'interrogazione. Nessuna regola di dominio vive
-qui — cfr. l'intestazione di rag/serializers.py per dove passa il confine.
+Le viste sono involucri HTTP attorno ai servizi: da P5 (T-32) il caricamento e'
+un involucro attorno ad accoda_indicizzazione() — a chiamare ingest_document()
+e' il worker, in un processo separato — e l'interrogazione lo e' attorno a
+rispondi(). Nessuna regola di dominio vive qui — cfr. l'intestazione di
+rag/serializers.py per dove passa il confine.
 """
 
 import logging
@@ -24,9 +26,10 @@ from .serializers import (
     DocumentUploadSerializer,
     RagPipelineSerializer,
 )
-from .services.exceptions import IngestionError, LlmNonRaggiungibile, QueryError
-from .services.ingestion import compute_checksum, ingest_document, trova_duplicato
+from .services.exceptions import LlmNonRaggiungibile, QueryError
+from .services.ingestion import compute_checksum, trova_duplicato
 from .services.query import rispondi
+from .tasks import accoda_indicizzazione
 
 logger = logging.getLogger(__name__)
 
@@ -116,32 +119,31 @@ def _base_di_conoscenza_predefinita() -> KnowledgeBase:
 
 @api_view(["GET", "POST"])
 def documenti(request):
-    """POST /api/documents/ — carica un PDF e lo indicizza (T-28, RF-01, RF-27).
+    """POST /api/documents/ — carica un PDF e lo mette in coda (T-28, T-32, RF-01).
 
-    SINCRONA, come ogni altro innesco dell'ingestione fino a T-32: la risposta
-    arriva a indicizzazione CONCLUSA, quindi dopo ~3 s a caldo e fino a ~25 s se
-    i modelli vanno caricati in VRAM. Il client deve prevedere un timeout
-    generoso.
+    ASINCRONA da P5: la risposta arriva ad accodamento avvenuto, non a
+    indicizzazione conclusa. E' il contratto che P4 aveva gia' annunciato in
+    questa stessa docstring — «il passaggio alla coda cambiera' il codice
+    restituito (202 invece di 201) e non la forma della risorsa ne' il modo in
+    cui un client scopre che il documento e' pronto». La misura che lo
+    giustifica: 14,53 s a freddo e 4,25 s a caldo in P4, contro l'accodamento
+    che non tocca ne' Ollama ne' pgvector.
 
-    Il contratto e' pero' gia' quello di P5: la risposta porta lo STATO del
-    documento e GET /api/documents/{id}/ lo rilegge, quindi il passaggio alla
-    coda cambiera' il codice restituito (202 invece di 201) e non la forma della
-    risorsa ne' il modo in cui un client scopre che il documento e' pronto.
+    Tre esiti:
 
-    Quattro esiti:
-
-    - 201 documento creato e indicizzato;
+    - 202 file accettato, documento creato in stato «in attesa», task
+      accodato. Per sapere com'e' finita si interroga
+      GET /api/documents/{id}/ finche' lo stato non e' «indexed» o «failed»;
     - 400 file mancante, non PDF, o base di conoscenza inesistente;
     - 409 stesso contenuto gia' presente nella base (RF-09). La riga NON viene
       creata e il file NON viene scritto: la deduplica precede la scrittura,
-      altrimenti ogni duplicato rifiutato lascerebbe un file orfano;
-    - 422 PDF illeggibile o senza testo (RF-10). La riga in questo caso RESTA,
-      con stato «Fallito» e il motivo — e' la stessa scelta dell'admin (RNF-04),
-      e cancellarla distruggerebbe la traccia del guasto. La risposta non e' 2xx
-      perche' la risorsa creata non e' utilizzabile.
+      altrimenti ogni duplicato rifiutato lascerebbe un file orfano.
 
-    Un guasto inatteso propaga e diventa 500: il documento resta «Fallito» con
-    il motivo, persistito dal servizio.
+    IL 422 NON ESISTE PIU', e non e' una svista. Un PDF illeggibile o senza
+    testo (RF-10) e' scoperto dal worker, quando la risposta e' gia' partita:
+    la condizione resta osservabile su GET /api/documents/{id}/, che riporta
+    status «failed» ed error_message. E' l'unico cambio di contratto di P5, e
+    va nel README.
 
     GET sullo stesso percorso restituisce l'elenco (T-29): il metodo si
     dirama qui perche' una rotta Django corrisponde a una sola vista, e
@@ -180,19 +182,12 @@ def documenti(request):
     )
     documento.save()
 
-    try:
-        esito = ingest_document(documento)
-    except IngestionError as exc:
-        # Stato «Fallito» e motivo sono GIA' persistiti dal servizio: qui si
-        # riporta, non si gestisce.
-        return Response(
-            {"detail": str(exc), "documento": DocumentSerializer(documento).data},
-            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        )
-
-    logger.info("Documento caricato via API — %s", esito)
+    task_id = accoda_indicizzazione(documento)
+    logger.info(
+        "Documento %s caricato via API e accodato (task %s).", documento.pk, task_id
+    )
     return Response(
-        DocumentSerializer(documento).data, status=status.HTTP_201_CREATED
+        DocumentSerializer(documento).data, status=status.HTTP_202_ACCEPTED
     )
 
 

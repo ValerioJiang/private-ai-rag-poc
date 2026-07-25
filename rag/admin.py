@@ -7,9 +7,11 @@ reindicizzazione (ARCHITECTURE §6.1).
 
 Nota di fase: da P2 il caricamento di un documento ne innesca l'indicizzazione
 (RF-29) e l'azione «Reindicizza i documenti selezionati» (T-19) corregge il
-disallineamento segnalato dalla colonna omonima. L'ingestione e' SINCRONA:
-diventera' asincrona in P5 (T-32), e l'unico punto da cambiare e'
-`DocumentAdmin.save_model()`.
+disallineamento segnalato dalla colonna omonima. Da P5 (T-32) l'ingestione e'
+ASINCRONA: `DocumentAdmin.save_model()` e l'azione non indicizzano piu' in
+linea, accodano un task che esegue `manage.py db_worker` in un processo
+separato. La pagina non attende piu', e il documento resta «In attesa» finche'
+un worker non lo prende.
 """
 
 from pathlib import Path
@@ -32,8 +34,8 @@ from .models import (
     RetrievalProfile,
     RetrievedChunk,
 )
-from .services.exceptions import IngestionError
-from .services.ingestion import compute_checksum, ingest_document, trova_duplicato
+from .services.ingestion import compute_checksum, trova_duplicato
+from .tasks import accoda_indicizzazione
 
 admin.site.site_header = "Sistema RAG — amministrazione"
 admin.site.site_title = "Sistema RAG"
@@ -385,11 +387,13 @@ class DocumentAdmin(admin.ModelAdmin):
             {
                 "fields": ("knowledge_base", "file", "original_filename"),
                 "description": (
-                    "Il salvataggio avvia immediatamente l'indicizzazione, che e' "
-                    "SINCRONA: la pagina resta in attesa per tutta la sua durata, e "
-                    "il primo embedding dopo l'avvio puo' richiedere ~20 s per il "
-                    "caricamento del modello in VRAM. Lo stesso file non puo' essere "
-                    "caricato due volte nella stessa base di conoscenza."
+                    "Il salvataggio mette il documento in coda per "
+                    "l'indicizzazione, che e' ASINCRONA da P5: la pagina non "
+                    "attende piu'. Il documento resta «In attesa» finche' "
+                    "`manage.py db_worker` non lo prende, e lo stato si "
+                    "aggiorna da solo. Se nessun worker e' in esecuzione, resta "
+                    "«In attesa» a tempo indeterminato. Lo stesso file non puo' "
+                    "essere caricato due volte nella stessa base di conoscenza."
                 ),
             },
         ),
@@ -441,12 +445,17 @@ class DocumentAdmin(admin.ModelAdmin):
         return campi
 
     def save_model(self, request, obj, form, change):
-        """Salva e indicizza (RF-29).
+        """Salva e ACCODA l'indicizzazione (RF-29, T-32).
 
         L'innesco sta qui e non in un signal post_save: il servizio salva il
         documento piu' volte — «In elaborazione», poi lo stato finale — e un
-        post_save si richiamerebbe da se'. In P5 (T-32) questa chiamata
-        diventa un enqueue e resta l'unico punto da modificare.
+        post_save si richiamerebbe da se'.
+
+        Da P5 la pagina non attende piu' l'indicizzazione: era il punto in cui
+        l'admin restava appeso fino a ~18 s a freddo. Il documento resta «In
+        attesa» finche' `manage.py db_worker` non lo prende; se nessun worker
+        e' in esecuzione, resta «In attesa» a tempo indeterminato — ed e'
+        esattamente cio' che /health riporta sotto la voce «coda».
         """
         if not obj.original_filename and obj.file:
             obj.original_filename = Path(obj.file.name).name
@@ -457,50 +466,35 @@ class DocumentAdmin(admin.ModelAdmin):
         if change and obj.status == Document.Status.INDEXED and "file" not in form.changed_data:
             return
 
-        try:
-            esito = ingest_document(obj)
-        except IngestionError as exc:
-            self.message_user(request, f"Indicizzazione non riuscita: {exc}", messages.ERROR)
-        except Exception as exc:  # noqa: BLE001 - l'admin non deve mostrare una 500
-            self.message_user(
-                request,
-                f"Indicizzazione interrotta da un errore inatteso: {exc}. "
-                "Il motivo e' registrato sul documento.",
-                messages.ERROR,
-            )
-        else:
-            self.message_user(
-                request,
-                f"Documento indicizzato: {esito.chunk_count} segmenti su "
-                f"{esito.page_count} pagine in {esito.durata_s:.1f}s.",
-                messages.SUCCESS,
-            )
+        accoda_indicizzazione(obj)
+        self.message_user(
+            request,
+            "Documento messo in coda per l'indicizzazione. Lo stato si aggiorna "
+            "da solo: ricaricare l'elenco fra qualche secondo. Se resta «In "
+            "attesa», nessun worker e' in esecuzione (manage.py db_worker).",
+            messages.INFO,
+        )
 
     @admin.action(description="Reindicizza i documenti selezionati")
     def reindicizza(self, request, queryset):
         """RF-07 e RF-25: rielaborare senza ricaricare.
 
-        Sincrona, quindi con N documenti la richiesta dura N ingestioni. E' il
-        limite dichiarato di P2, che T-32 rimuove.
+        Da P5 la richiesta non dura piu' N ingestioni: accoda N task e torna
+        subito. E' il limite di P2 che T-32 rimuove — con N documenti
+        l'azione costava N volte fino a 18 s, e su un elenco lungo l'admin
+        finiva in timeout.
         """
-        riusciti = falliti = 0
+        accodati = 0
         for documento in queryset:
-            try:
-                ingest_document(documento)
-                riusciti += 1
-            except Exception as exc:  # noqa: BLE001 - un fallimento non ferma gli altri
-                falliti += 1
-                self.message_user(request, f"{documento}: {exc}", messages.ERROR)
-        if riusciti:
-            self.message_user(
-                request, f"{riusciti} documenti reindicizzati.", messages.SUCCESS
-            )
-        if falliti:
-            self.message_user(
-                request,
-                f"{falliti} documenti non reindicizzati: il motivo e' sul singolo documento.",
-                messages.WARNING,
-            )
+            accoda_indicizzazione(documento)
+            accodati += 1
+        self.message_user(
+            request,
+            f"{accodati} documenti messi in coda. L'esito di ciascuno compare "
+            f"sul documento stesso: stato «Indicizzato», oppure «Fallito» con "
+            f"il motivo.",
+            messages.SUCCESS,
+        )
 
 
 # --------------------------------------------------------------------------

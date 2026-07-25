@@ -42,6 +42,15 @@ class Command(BaseCommand):
             metavar="ID",
             help="Reindicizza un documento esistente invece di caricarne uno nuovo.",
         )
+        parser.add_argument(
+            "--async",
+            dest="asincrono",
+            action="store_true",
+            help=(
+                "Accoda l'indicizzazione invece di eseguirla, e termina subito. "
+                "Richiede un worker in esecuzione (manage.py db_worker)."
+            ),
+        )
 
     def handle(self, *args, **options):
         if options["reindex"] is not None:
@@ -54,14 +63,33 @@ class Command(BaseCommand):
         else:
             documento = self._crea_documento(options["path"], options["kb"])
 
+        if options["asincrono"]:
+            # Il comando resta SINCRONO per difetto, ed e' una scelta: RNF-03
+            # parla del ciclo richiesta/risposta HTTP, di cui un comando di
+            # gestione non fa parte, e le prove di consegna (T-42 su ambiente
+            # pulito, T-43 a rete staccata) devono poter girare senza un
+            # secondo processo. --async serve a provare la coda senza passare
+            # da HTTP.
+            from rag.tasks import accoda_indicizzazione
+
+            task_id = accoda_indicizzazione(documento)
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Documento {documento.pk} accodato (task {task_id}). "
+                    f"Lo esegue il worker: manage.py db_worker"
+                )
+            )
+            return
+
         self.stdout.write(
             f"Indicizzazione del documento {documento.pk} "
             f"nella base «{documento.knowledge_base.name}»…"
         )
         self.stdout.write(
             self.style.WARNING(
-                "L'ingestione e' sincrona in P2 e il primo embedding puo' "
-                "richiedere fino a ~20 s per il caricamento del modello in VRAM."
+                "Questo comando indicizza in linea e attende: il primo "
+                "embedding puo' richiedere fino a ~20 s per il caricamento del "
+                "modello in VRAM. Per accodare e tornare subito: --async."
             )
         )
         try:

@@ -128,16 +128,18 @@ class EsitoIngestione:
 
 
 def ingest_document(document: Document) -> EsitoIngestione:
-    """Indicizza (o reindicizza) un documento. Sincrona in P2.
+    """Indicizza (o reindicizza) un documento.
 
     Idempotente: rieseguirla sullo stesso documento sovrascrive i vettori e
     aggiorna le righe DocumentChunk, senza duplicare nulla. E' cio' che rende
     T-19 («reindicizza») una semplice rilettura di questa funzione.
 
-    L'asincronia e' P5 (T-32): fino a quel momento la chiamata BLOCCA il
-    chiamante — la richiesta dell'admin o il comando di gestione — per tutta la
-    durata dell'indicizzazione. E' un limite noto e dichiarato, non una
-    dimenticanza.
+    LA CHIAMA IL WORKER, da P5 (T-32): questa funzione BLOCCA il chiamante per
+    tutta la durata dell'indicizzazione, e il chiamante e' `db_worker` in un
+    processo separato. Gli inneschi HTTP e l'admin non la chiamano piu'
+    direttamente — passano da rag.tasks.accoda_indicizzazione(). L'unica via
+    sincrona rimasta e' `manage.py ingest` senza --async, dove attendere e'
+    esattamente cio' che si vuole.
 
     Solleva:
         IngestionError: condizione imputabile al documento o alla sua
@@ -205,14 +207,13 @@ def _esegui_ingestione(document: Document, inizio: float) -> EsitoIngestione:
     store = get_vectorstore(kb, embeddings=embeddings)
 
     # --- 3. «In elaborazione», salvato PRIMA del lavoro -------------------
-    # Fuori dalla transazione finale: se stesse dentro, lo stato non esisterebbe
-    # mai come momento osservabile (RNF-04).
-    # ATTENZIONE, la garanzia non e' piena su tutte le vie d'innesco: l'admin
-    # avvolge l'intero POST in una transaction.atomic() propria
-    # (ModelAdmin.changeform_view), quindi da li' questa scrittura e' visibile
-    # solo al commit della richiesta. Da manage.py ingest, invece, e' commessa
-    # subito. Diventera' piena in P5, quando a scrivere «In elaborazione» sara'
-    # il worker e non il ciclo richiesta/risposta.
+    # Fuori dalla transazione finale: se stesse dentro, lo stato non
+    # esisterebbe mai come momento osservabile (RNF-04).
+    # Da P5 la garanzia e' PIENA sulla via che conta: a scrivere questo stato
+    # e' il worker, in autocommit, quindi «In elaborazione» e' visibile
+    # nell'admin mentre dura. Resta parziale da `manage.py ingest` sincrono e
+    # con TASKS_BACKEND=ImmediateBackend, dove il chiamante e' il processo che
+    # attende comunque.
     document.status = Document.Status.PROCESSING
     document.error_message = ""
     document.save(update_fields=["status", "error_message"])
