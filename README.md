@@ -64,6 +64,27 @@ consuete sono spesso già occupate da altri stack. Il valore sta in
 saperlo solo per collegarsi al database dall'esterno. Dentro la rete di Compose
 vale invece la porta interna 5432.
 
+## Uso da riga di comando
+
+Le stesse operazioni disponibili dall'admin esistono come comandi di gestione,
+per prova e automazione:
+
+```bash
+python manage.py ingest samples/manuale-dipendenti.pdf
+python manage.py ask "Quanti giorni di ferie si maturano all'anno?"
+python manage.py ask "..." --pipeline "Pipeline predefinita" --json
+```
+
+`ingest` porta il documento a *indicizzato*; `ask` stampa la risposta con
+documento, pagina, estratto e punteggio di ogni fonte, più i tempi di recupero e
+generazione separati. Con `--json` l'uscita è analizzabile, e l'avviso sui tempi
+va su `stderr` per non sporcarla. Senza `--pipeline` si usa quella predefinita.
+
+Entrambi i comandi sono **sincroni** e a freddo attendono il caricamento dei
+modelli in VRAM: alcune decine di secondi alla prima esecuzione, pochi secondi
+dopo. Una domanda che non trova contesto pertinente riceve una dichiarazione di
+non conoscenza, non una risposta inventata.
+
 ## Licenza
 
 Progetto realizzato come prova tecnica.

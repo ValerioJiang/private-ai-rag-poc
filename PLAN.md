@@ -12,15 +12,19 @@ Deadline: **lunedì 27, ore 9:30**. Oggi: giovedì 23.
 | PDF | PyMuPDF usato **direttamente** (`fitz`), non via `PyMuPDFLoader` | Veloce, conserva il numero di pagina → necessario per le citazioni. Il loader di LangChain richiederebbe `langchain-community`, cfr. ARCHITECTURE §7.10. |
 | API | Django REST Framework | La browsable API funge anche da interfaccia di prova. |
 | Async | `django-tasks` + `django-tasks-db` | L'ingestione di un PDF lungo non deve bloccare un worker HTTP. Coda su Postgres: nessun servizio con stato in più, e l'API è agnostica rispetto al backend, quindi passare a Celery è una voce di settings. **Nota:** `django.tasks` di Django 6 offre solo i backend `immediate` e `dummy`, quindi il backend DB arriva comunque dal backport. Cfr. ARCHITECTURE §7.5. |
-| Cache | `LocMemCache` (in-process) | L'unico oggetto memorizzato è la catena LangChain costruita da `build_chain`: oggetti Python vivi, non serializzabili. Una cache esterna sarebbe inutilizzabile per definizione. |
+| Cache | **Dizionario di modulo** in `factories.py` | Gli oggetti memorizzati sono vivi e non serializzabili. **Corretto in P3:** era previsto `LocMemCache`, che però serializza con `pickle` anche restando in-process — verificato, `cache.set()` solleva «cannot pickle `_thread.RLock`» sia per `ChatOllama` sia per `PGVector`, che contengono un client httpx e un engine SQLAlchemy. Non è la catena a essere memorizzata, ma le sue **due parti costose** (LLM e vector store): `build_chain()` resta non cachata e rilegge la configurazione a ogni richiesta, che è ciò che rende dimostrabile RF-22. |
 
 ## Principio architetturale portante
 
 Ogni parametro del sistema è una **riga di database**, non una costante nel codice.
 Le catene LangChain vengono costruite a runtime da quelle righe da
-`rag/services/factories.py`, con cache invalidata da un signal `post_save`.
-È questa la risposta al requisito «modificare il comportamento dall'admin senza
-mettere mano al codice».
+`rag/services/factories.py`. È questa la risposta al requisito «modificare il
+comportamento dall'admin senza mettere mano al codice».
+
+A garantirlo è la **chiave** della cache, che contiene i valori della
+configurazione e non solo l'id, quindi cambia da sé a ogni modifica — anche in
+un processo che il `post_save` non lo riceve mai. Il signal libera memoria e
+rende l'effetto immediato dove si è salvato; cfr. ARCHITECTURE §3.
 
 ## Entità
 
@@ -36,7 +40,7 @@ mettere mano al codice».
 - `RagPipeline` — aggregatore: FK a tutti i profili + KB, `is_active`
 - `Document` — file, KB, stato (`pending → processing → indexed | failed`), page_count, checksum, error_message
 - `DocumentChunk` — FK doc, page, ordinal, text, vector_id
-- `QueryLog` — domanda, risposta, pipeline, chunk recuperati + score, latency_ms
+- `QueryLog` — domanda, risposta, pipeline, chunk recuperati + score, **tre tempi separati** (`retrieval_ms`, `generation_ms`, `latency_ms`) ed `error`
 
 ## Fasi
 
@@ -59,8 +63,9 @@ Transizioni di stato, cattura errori. Admin action «Re-index selected» +
 **Demo:** upload di un PDF dall'admin, i chunk compaiono.
 
 ### P3 — Retrieval + generazione (~4h)
-Factory layer, catena LCEL (`retriever | format_docs | prompt | llm | parser`),
-costruzione citazioni, scrittura `QueryLog`.
+Factory layer, catena LCEL, costruzione citazioni, scrittura `QueryLog`.
+La catena è `prompt | llm | parser`: il **recupero resta fuori**, prima di essa,
+perché `QueryLog` vuole `retrieval_ms` e `generation_ms` separati.
 **Demo:** `manage.py ask "..."` restituisce risposta + fonti.
 
 ### P4 — API (~3h)

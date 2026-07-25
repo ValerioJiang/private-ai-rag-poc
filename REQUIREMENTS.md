@@ -196,8 +196,16 @@ Escluso esplicitamente, da dichiarare nelle note di consegna:
 |---|---|---|
 | RF-17 → RF-26, RF-30 | P1 — Modelli e admin | CA-5, CA-6, CA-7 |
 | RF-01 → RF-10, RF-29 | P2 — Ingestione | CA-2, CA-8 |
-| RF-11 → RF-16 | P3 — Recupero e generazione | CA-3, CA-4 |
-| RF-27, RF-28 | P4 — API e comandi | CA-3, CA-7 |
+| RF-11 → RF-16, RF-23 | P3 — Recupero e generazione | CA-3, CA-4, CA-5, CA-6, CA-7 |
+| RF-27 | P4 — API | CA-3, CA-7 |
+| RF-28 | P2 e P3 — comandi di gestione (`manage.py ingest`, `manage.py ask`) | CA-2, CA-3 |
 | RNF-03, RNF-04 | P5 — Asincronia e rifiniture | CA-2, CA-8 |
 | RNF-02, RNF-05, RNF-06, RNF-07 | P6 — Test e documentazione | CA-1, CA-10 |
 | RNF-01, V-03 | Trasversale (cfr. ARCHITECTURE §1) | CA-9 |
+
+La colonna indica dove il requisito viene **realizzato**, che non sempre
+coincide con dove viene *modellato*. RF-21 e RF-22 stanno nella riga di P1
+perché è lì che nascono i campi dell'admin, ma diventano veri in P3: prima di
+`build_chain()` non esisteva nulla che rileggesse quella configurazione, quindi
+non c'era comportamento da cambiare senza riavvio. CA-5, CA-6 e CA-7 compaiono
+per la stessa ragione anche nella riga di P3, dove sono stati dimostrati.

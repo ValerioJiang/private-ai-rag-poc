@@ -121,9 +121,20 @@ flowchart TB
 ```
 
 Il principio che regge tutta la prova: **nessun parametro è una costante nel
-codice**. `build_chain(pipeline)` legge la configurazione a ogni richiesta, con
-cache invalidata da un signal `post_save`, così una modifica dall'admin ha
-effetto senza riavviare il processo.
+codice**. `build_chain(pipeline)` legge la configurazione a ogni richiesta, così
+una modifica dall'admin ha effetto senza riavviare il processo.
+
+Ciò che rende vera quell'affermazione, dalla P3, è la **chiave** della cache
+delle factory, non il signal. Sono memorizzati i due oggetti costosi — l'LLM e
+il vector store, 0,77 s e 0,83 s di costruzione misurati — e la loro chiave
+contiene i **valori** della configurazione (`updated_at` del profilo,
+`index_fingerprint()` della base di conoscenza), non solo la chiave primaria.
+Chi interroga rilegge comunque quelle righe a ogni richiesta, quindi vede subito
+il valore nuovo **anche in un processo che il `post_save` non lo riceve mai**,
+cioè con più worker. Il receiver di `rag/signals.py` libera memoria e rende
+l'effetto immediato nel processo che ha salvato: è utile, non è la garanzia.
+La distinzione conta perché chi la ignorasse replicherebbe la forma senza la
+sostanza.
 
 ---
 
@@ -190,6 +201,28 @@ sequenceDiagram
     API->>DB: QueryLog
     API-->>U: answer + sources + latency_ms
 ```
+
+**Stato attuale.** L'endpoint è P4 (T-30): oggi l'unico ingresso è
+`manage.py ask "<domanda>"` (T-27), che chiama `rispondi()` in
+`rag/services/query.py`. Il diagramma resta il bersaglio, e il servizio è
+scritto perché P4 debba solo esporlo via HTTP.
+
+Tre precisazioni che il diagramma non può contenere, tutte decise in P3:
+
+- **il recupero sta fuori dalla catena**, prima di essa. La catena LCEL è
+  `prompt | llm | StrOutputParser` e nient'altro, perché `QueryLog` vuole
+  `retrieval_ms` e `generation_ms` **separati** — in P0 si è misurato un
+  recupero da 12 s accanto a una generazione da 1. Dentro un'unica catena i due
+  tempi sarebbero distinguibili solo con dei callback;
+- **sotto soglia l'LLM non viene interrogato affatto.** Zero segmenti dopo il
+  filtro significa risposta di non conoscenza con `generation_ms = 0` e nessuna
+  fonte: è l'unica forma di RF-14 che non dipenda dall'obbedienza del modello al
+  prompt. Vale anche per una base di conoscenza vuota;
+- **il punteggio restituito è la rilevanza, non la distanza** (§7.9).
+
+Il `QueryLog` si scrive **sempre**, anche quando l'interrogazione fallisce: è la
+stessa scelta che in ingestione persiste lo stato «Fallito» invece di lasciarlo
+nei log.
 
 ---
 
@@ -583,6 +616,28 @@ sufficiente; per una coda ad alta frequenza servirebbe un broker vero.
 | Ibrido BM25 + vettoriale | Molto meglio su codici, sigle, nomi propri | Richiede un indice full-text parallelo. **Fuori scope** |
 | Reranker cross-encoder | Miglioramento netto della precisione | Raddoppia la latenza, un modello in più da servire. **Fuori scope** |
 
+Le strategie realizzate sono **tre**, non due: `RetrievalProfile.SearchType`
+espone anche `similarity_score_threshold`, cioè la stessa ricerca con un filtro
+sulla rilevanza applicato **dopo** il `top_k`. Conseguenza da conoscere: con
+`top_k=4` e una soglia alta si possono ottenere zero risultati anche se il
+quinto segmento della collezione l'avrebbe superata. È lo stesso ordine di
+operazioni di LangChain in `similarity_search_with_relevance_scores`.
+
+**La soglia predefinita non è un numero scelto a occhio.** Misure sul corpus di
+prova (`manuale-dipendenti.pdf`, 3 segmenti, `bge-m3`, 25/07/2026), rifatte in
+P3 e coincidenti con quelle di pianificazione:
+
+| Caso | Rilevanza osservata |
+|---|---|
+| Domanda pertinente | 0,68 – 0,73 |
+| Stesso documento, pagina sbagliata | 0,35 – 0,46 |
+| Domanda fuori tema | 0,15 – 0,26 |
+
+Il valore predefinito **0,5** cade nel primo intervallo vuoto: una domanda
+pertinente conserva il suo segmento, una fuori tema non ne conserva nessuno. È
+il dato che rende CA-4 dimostrabile senza nemmeno interrogare l'LLM (§5). Il
+corpus è però piccolo: se cambia, le bande cambiano e la soglia va rimisurata.
+
 ### 7.8 Osservabilità e tracing
 
 | Opzione | Pro | Contro |
@@ -626,7 +681,7 @@ Scelto pgvector (§7.2), resta una seconda decisione, spesso data per scontata:
 
 | Opzione | Pro | Contro |
 |---|---|---|
-| **`langchain_postgres.PGVector`** ✅ | `as_retriever()` fornisce similarity, MMR e soglia già pronti (§7.7); integrazione LCEL diretta; nessuna query SQL scritta a mano | Possiede due tabelle fuori dalle migrazioni Django (§6.3); impone la duplicazione del testo dei chunk (§6.5); ferma alla **0.0.17**; trascina **SQLAlchemy, asyncpg e psycopg-pool**, cioè un secondo ORM e un secondo driver accanto a quelli di Django |
+| **`langchain_postgres.PGVector`** ✅ | Similarity, MMR e soglia già pronti (§7.7); integrazione LCEL diretta; nessuna query SQL scritta a mano | Possiede due tabelle fuori dalle migrazioni Django (§6.3); impone la duplicazione del testo dei chunk (§6.5); ferma alla **0.0.17**; trascina **SQLAlchemy, asyncpg e psycopg-pool**, cioè un secondo ORM e un secondo driver accanto a quelli di Django |
 | `BaseRetriever` custom sull'ORM Django (`pgvector.django.CosineDistance`) | **Uno schema solo**, interamente sotto migrazioni Django; nessuna duplicazione del testo; un solo ORM e un solo driver; filtri sui metadata con l'ORM normale | MMR, `fetch_k` e `score_threshold` vanno implementati a mano; più codice da testare |
 
 Scelta: **`PGVector`**, perché la traccia premia la configurabilità del
@@ -640,18 +695,48 @@ non la sola duplicazione delle tabelle.
 uscita dalla serie 0.0.x — l'ultima release è la **0.0.17** — ma dichiara
 `langchain-core<2.0,>=0.2.13`, quindi la **1.5.x in uso rientra nel vincolo**.
 Non c'è conflitto di risoluzione; il rischio residuo è di comportamento, non di
-dipendenze, e va confermato dallo spike (T-06).
+dipendenze. Lo spike (T-06) l'ha confermato, e P2 e P3 l'hanno esercitata su
+entrambi i lati senza incontrarne uno: i comportamenti da conoscere sono quelli
+elencati qui sotto, tutti aggirabili, nessuno bloccante.
 
 **Comportamenti verificati sulla 0.0.17, che il codice deve tenere in conto.**
 Costruire un `PGVector` non è gratuito: `__post_init__` esegue DDL a **ogni**
 chiamata — `create_tables_if_not_exists()` e `create_collection()`, misurati
-0,55 s — quindi l'oggetto si costruisce una volta per ingestione, mai dentro un
-ciclo, e con `create_extension=False` visto che la migrazione iniziale ha già
-installato l'estensione. `add_texts()` invia **tutti** i testi in una sola
-richiesta, quindi il lotto lo decide il chiamante (§7.3). E
-`similarity_search_with_score()` restituisce una **distanza**, non una
-similarità — misurati 0,3038 sul chunk pertinente contro 0,4540 e 0,5617 —
-cioè un valore che ordina al contrario di come si legge il nome.
+0,55 s in P2 e 0,83 s in P3 — quindi l'oggetto si costruisce una volta per
+ingestione, mai dentro un ciclo, e con `create_extension=False` visto che la
+migrazione iniziale ha già installato l'estensione. Dalla P3 è **memorizzato per
+processo** dalle factory (§3), così il DDL si paga una volta sola invece che a
+ogni interrogazione. `add_texts()` invia **tutti** i testi in una sola
+richiesta, quindi il lotto lo decide il chiamante (§7.3).
+
+**`similarity_search_with_score()` restituisce una distanza, non una
+similarità** — misurati 0,3038 sul chunk pertinente contro 0,4540 e 0,5617 —
+cioè un valore che ordina al contrario di come si legge il nome. RF-13 chiede
+però un «punteggio di similarità» e `RetrievalProfile.score_threshold` è
+dichiarato fra 0 e 1 con la semantica opposta. La conversione avviene in **un
+solo punto**, `rilevanza(d) = 1 − d`, che non è una formula inventata: è la
+stessa di `VectorStore._cosine_relevance_score_fn`, cioè il numero che LangChain
+confronterebbe con la soglia. Da lì in poi nel sistema circola una sola
+grandezza — quella mostrata all'utente, quella confrontata con la soglia e
+quella registrata in `RetrievedChunk.score` sono lo stesso numero. Limite
+dichiarato: con vettori normalizzati la distanza sta in [0, 2], quindi la
+rilevanza **può essere negativa** per un segmento agli antipodi della domanda;
+non si tronca a zero, perché nascondere il segno farebbe sembrare «poco
+pertinente» ciò che è «opposto». Il caso non si è mai presentato (minimo
+osservato 0,1463).
+
+**Per questo `as_retriever()` non viene usato.** Un `VectorStoreRetriever`
+restituisce `list[Document]`: i punteggi si perdono, mentre RF-13 (fonti col
+punteggio) e RF-16 (`RetrievedChunk.score`, `FloatField` **non nullo**) li
+richiedono entrambi. Si usano quindi i metodi `*_with_score`, che esistono per
+tutte e tre le strategie — `max_marginal_relevance_search_with_score` compreso.
+L'alternativa, un retriever per il contesto più una seconda ricerca per le
+fonti, costerebbe due embedding della stessa domanda (~1,2 s buttati) e
+rischierebbe di mostrare fonti **diverse** dai segmenti effettivamente passati
+all'LLM, perché MMR non è deterministico rispetto a `fetch_k`. Una citazione che
+non corrisponde al contesto è peggio di nessuna citazione. La conseguenza è che
+`RetrievalProfile` non produce un oggetto retriever ma seleziona una
+**strategia**: `esegui_ricerca(store, profilo, domanda)` in `query.py`.
 
 Due comportamenti riguardano invece la scrittura, e vanno letti insieme perché
 smentiscono l'intuizione che la collezione sia un confine invalicabile.

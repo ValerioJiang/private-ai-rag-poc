@@ -101,16 +101,16 @@ rendering visivo. Debiti accertati verso le fasi seguenti: la riconciliazione fr
 transazione — le due metà dello schema stanno su connessioni distinte — e
 l'ingestione resta **sincrona** (~0,8–1 s per segmento più ~1 s di sonda fissa,
 fino a ~18 s a freddo), quindi RNF-03 non è soddisfatto finché resta aperta T-32.
-La collezione `spike` è stata rimossa; `scripts/spike_rag.py` resta fino alla
-chiusura di P3, finché `manage.py ask` non esiste. Dettaglio in
+La collezione `spike` è stata rimossa; `scripts/spike_rag.py` è stato cancellato
+alla chiusura di P3, quando `manage.py ask` l'ha sostituito. Dettaglio in
 [`plans/2026-07-24-2259-P2-plan-report.md`](plans/2026-07-24-2259-P2-plan-report.md).
 
 ## P3 — Retrieval e generazione
 
 | ID | Attività | Pri | Stima | Dipende da |
 |---|---|---|---|---|
-| T-21 | `factories.get_llm()` da `LLMProfile` + cache in-process invalidata da `post_save` (RF-22) | M | 1h30 | T-07 |
-| T-22 | `factories.get_retriever()` da `RetrievalProfile` (similarity / MMR / soglia) | M | 45m | T-16 |
+| T-21 | `factories.get_llm()` da `LLMProfile` + cache in-process la cui **chiave contiene i valori** della configurazione, con `post_save` a liberare memoria (RF-22) | M | 1h30 | T-07 |
+| T-22 | `query.esegui_ricerca()` da `RetrievalProfile` (similarity / MMR / soglia). **Non** `factories.get_retriever()`: un `VectorStoreRetriever` perde i punteggi, che RF-13 e RF-16 richiedono | M | 45m | T-16 |
 | T-23 | Catena LCEL con prompt da `PromptTemplate` e formattazione del contesto | M | 1h30 | T-21, T-22 |
 | T-24 | Costruzione delle fonti (documento, pagina, estratto, score) — RF-13 | M | 1h | T-23 |
 | T-25 | Comportamento «non dispongo dell'informazione» sotto soglia (RF-14, CA-4) | S | 1h | T-23 |
@@ -119,6 +119,32 @@ chiusura di P3, finché `manage.py ask` non esiste. Dettaglio in
 
 **Verifica di fase:** `manage.py ask` risponde citando le fonti; cambiare la
 temperatura dall'admin modifica la risposta senza riavvio.
+
+**Stato: completata il 25/07/2026.** T-21 → T-27 chiuse. Verifica di fase
+superata nei suoi dieci punti, da (a) a (j): `manage.py ask` risponde citando
+documento, pagina, estratto e punteggio (RF-13, CA-3); una domanda fuori tema
+ottiene la dichiarazione di non conoscenza (RF-14, CA-4) e, sotto soglia,
+**senza nemmeno interrogare l'LLM** (`generation_ms = 0`); ridurre `top_k`
+dall'admin riduce le fonti (CA-6) e due pipeline sulla stessa base di conoscenza
+danno risposte diverse (CA-7). Il punto centrale della traccia è stato
+verificato col criterio stretto: cambiata la temperatura dall'admin su un
+`runserver` in un **processo separato**, a temperatura 0 due esecuzioni della
+stessa domanda danno lo stesso testo, a 1.8 danno testi diversi — senza riavvio
+(RF-22, CA-5). Coperti RF-11 → RF-16, RF-21 → RF-23, RF-28. Nessuna migrazione,
+nessuna dipendenza nuova.
+
+Due scostamenti dal piano, entrambi imposti da una misura e non da un'opinione:
+T-22 è una factory di **strategia** e non di oggetto (cfr. la riga qui sopra), e
+la clausola attorno a `invoke()` è `except (OSError, httpx.TransportError)`
+perché con Ollama spento `ChatOllama` solleva `httpx.ConnectError`, che **non**
+discende da `OSError` — un `except OSError` da solo avrebbe lasciato sfuggire
+proprio il caso per cui esisteva. Una verifica incrociata a fase chiusa ha poi
+corretto due difetti che nessuna verifica di fase copriva: `is_active` era
+aggirabile passando la pipeline come istanza, e `--json` non produceva
+un'uscita analizzabile. Limite dell'esecuzione, dichiarato: nessun browser
+interattivo, quindi l'admin è stato pilotato via HTTP con login, CSRF e
+sessione, ma senza rendering visivo. Dettaglio in
+[`plans/2026-07-25-0051-P3-plan-report.md`](plans/2026-07-25-0051-P3-plan-report.md).
 
 ## P4 — API
 
