@@ -38,3 +38,13 @@ pymupdf>=1.24
 # transitiva di langchain-ollama, ma il codice di prima parte non deve
 # dipendere da una transitiva.
 httpx>=0.27
+
+# --- Test (P6, T-36 → T-38) ---
+# pytest e non `manage.py test`: CA-10 nomina pytest esplicitamente. I test
+# sono scritti in stile pytest (funzioni, non TestCase), quindi il runner di
+# Django NON li raccoglie — dichiarato nel README.
+pytest>=8.0
+# Fornisce il marcatore django_db, la creazione del database di prova e le
+# fixture `settings` e `django_user_model`. Nessuna delle due parla con la
+# rete (RNF-01).
+pytest-django>=4.9
