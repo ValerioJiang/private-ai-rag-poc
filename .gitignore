@@ -36,5 +36,10 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Esiti della prova a rete staccata (T-43): verbale, log dei due processi e PDF
+# generato. Sono prodotti di un'esecuzione, non sorgenti — cio' che della prova
+# va conservato finisce in ARCHITECTURE.md §9 e nel report di P6.
+/esiti-t43/
+
 # Strumenti locali di sviluppo: restano sulla macchina, fuori dal repository
 .claude/

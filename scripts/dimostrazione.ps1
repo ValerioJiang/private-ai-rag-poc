@@ -105,7 +105,16 @@ function Invoke-Richiesta {
     try {
         $risposta = Invoke-WebRequest @parametri
         $codice = [int]$risposta.StatusCode
-        $testo = $risposta.Content
+        # NON $risposta.Content. DRF risponde «application/json» senza charset, e
+        # in assenza di charset Invoke-WebRequest di PowerShell 5.1 decodifica in
+        # ISO-8859-1: la risposta «L'indennita' e' di 45 euro» con le accentate
+        # vere usciva «L'indennitÃ  Ã¨ di 45 euro». Misurato il 26/07/2026 durante
+        # il collaudo di prova-rete-staccata.ps1, che aveva ereditato da qui la
+        # stessa forma. I byte grezzi sono UTF-8 e vanno letti come tali.
+        $flusso = $risposta.RawContentStream
+        $flusso.Position = 0
+        $lettore = New-Object System.IO.StreamReader($flusso, [Text.Encoding]::UTF8)
+        try { $testo = $lettore.ReadToEnd() } finally { $lettore.Close() }
     }
     catch {
         $rispostaErrore = $_.Exception.Response
