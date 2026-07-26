@@ -164,9 +164,12 @@ senza interventi sul codice**.
 Verifiche dimostrabili a fine lavoro; costituiscono anche la traccia della prova
 finale.
 
-La colonna **Esito** riporta lo stato al 26/07/2026, alla chiusura della fase 8
-di P6 (T-42). Dove dice *da compilare* la prova non è ancora stata eseguita e la
-riga **non** va letta come superata: resta il solo CA-9, che attende T-43.
+La colonna **Esito** riporta lo stato al 26/07/2026, a P6 chiusa: **tutti e dieci
+i criteri sono superati**, gli ultimi due dalle prove di consegna T-42 (CA-1) e
+T-43 (CA-9). Due esiti vanno letti con la loro riserva, dichiarata in riga e non
+in nota: CA-4 è retto dal prompt di sistema e non dalla soglia, e CA-2/CA-8 sono
+stati verificati sull'admin servito via HTTP con sessione autenticata, non
+guardato in un browser.
 
 Il dettaglio di ciascuna verifica — comando,
 uscita, misure — sta nella sezione «Criteri di accettazione» del
@@ -183,7 +186,7 @@ qui resta il riferimento.
 | **CA-6** | Modificando il numero di segmenti recuperati, cambia il numero di fonti restituite | Admin + API | **Superato in P4, P5 e T-42** (in T-42: `top_k` 4 → 2 → 1 → 4 porta le fonti a 3 → 2 → 1 → 3, pid invariati) |
 | **CA-7** | Due pipeline distinte sulla stessa base di conoscenza producono risposte diverse, selezionabili per richiesta | API | **Superato in P4 e T-42** (due pipeline che differiscono solo per il prompt: risposte diverse, fonti e punteggi identici) |
 | **CA-8** | Un PDF corrotto o solo immagine porta il documento in stato *fallito* con motivo leggibile, senza compromettere il sistema | Admin | **Superato** — P5 e T-42 con `curl` vero (202 poi `failed` con motivo, e il sistema resta operativo), i due casi di `test_un_pdf_non_indicizzabile_…`, e in T-42 la riga «Fallito · 0 · 0» più il motivo per esteso nell'admin servito su sessione autenticata. Nessuna lettura in un **browser** |
-| **CA-9** | Nessuna chiamata di rete verso servizi terzi durante ingestione e interrogazione | Ispezione del traffico / assenza di credenziali esterne | **Da compilare (T-43).** Misurato finora solo sui test, che passano col client di inferenza su una porta chiusa |
+| **CA-9** | Nessuna chiamata di rete verso servizi terzi durante ingestione e interrogazione | Ciclo completo a interfacce di rete disattivate (`scripts/prova-rete-staccata.ps1`) | **Superato (T-43, 26/07/2026 ore 12:48).** Esterno irraggiungibile per misura, localhost raggiungibile; ciclo completo riuscito su un PDF mai indicizzato prima, coi tempi pari a quelli a rete attiva; nei log tutte e dodici le richieste HTTP dei due processi vanno a `localhost:11434`. Dettaglio in ARCHITECTURE §9 |
 | **CA-10** | La suite di test passa | `pytest` | **Superato** — 29 test, 10,44 s; 10,39 s con `OLLAMA_BASE_URL` su porta chiusa; **29 passed in 7,52 s** sul virtualenv ricostruito di T-42 |
 
 ## 8. Fuori ambito
@@ -265,9 +268,13 @@ script `scripts/dimostrazione.ps1` (T-41), che percorre il flusso completo
 cronometrando ogni passo e fallendo con un messaggio che nomina la causa —
 per esempio il worker mai avviato — invece di un timeout muto.
 
-**CA-1 e CA-9 restano da verificare** alla data di questa revisione: sono l'esito
-di T-42 (prova da zero su ambiente pulito) e T-43 (prova a rete staccata), che
-richiedono l'operatore e non sono ancora state eseguite. Finché non lo sono,
-RNF-01 resta **argomentato e non verificato** (ARCHITECTURE §9) e RNF-02 non ha
-la sua prova. I posti dove va scritto l'esito sono segnati: §7 qui sopra, la
-sezione «Criteri di accettazione» del README e ARCHITECTURE §9.
+**CA-1 e CA-9 sono stati verificati il 26/07/2026** dalle due prove di consegna,
+che richiedevano l'operatore. T-42 ha ricostruito l'ambiente da zero — volume,
+`media/` e virtualenv cancellati — seguendo il solo README: **superato al secondo
+giro**, dopo che il primo ha scoperto tre difetti nei comandi `curl` per Windows,
+il che è l'esito che quella prova esisteva per produrre. T-43 ha rifatto il ciclo
+completo a interfacce disattivate: **da qui RNF-01 è verificato e non più
+soltanto argomentato**, con l'evidenza in ARCHITECTURE §9 — non l'assenza di
+errori di rete, ma l'elenco completo delle richieste HTTP dei due processi, tutte
+verso `localhost:11434`. **RNF-02 ha ora la sua prova**, ed è la sequenza del
+README rieseguita da capo dopo le correzioni.

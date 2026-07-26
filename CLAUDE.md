@@ -202,17 +202,29 @@ presenti negli enum (`openai_compatible`, `huggingface`) sono **alternative
 documentate, non opzioni attivabili**: sollevano `ConfigurazioneNonSupportata`
 con un messaggio che spiega perché.
 
+**Dal 26/07/2026 è verificato, non solo argomentato** (T-43): a interfacce di
+rete disattivate il ciclo completo funziona con gli stessi tempi, e nei log tutte
+e dodici le richieste HTTP dei due processi vanno a `localhost:11434`. La prova
+si rifà con `scripts/prova-rete-staccata.ps1`, che si conduce da solo e lascia un
+verbale — a rete staccata nessuno può guidarla da fuori. Chi tocca una dipendenza
+o un percorso di rete la riesegua: l'esito sta in `ARCHITECTURE.md` §9.
+
 ## Stato
 
-P0 → P5 completate (scaffolding, modelli e admin, ingestione, recupero e
-generazione, API REST, asincronia e rifiniture). **P6 in corso:** T-36 → T-41
-chiuse — suite pytest, `excerpt_length` promosso a configurazione,
-`scripts/dimostrazione.ps1`, documentazione di consegna. **T-42** (prova da zero
-su ambiente pulito, CA-1) e **T-43** (prova a rete staccata, RNF-01 e CA-9)
-richiedono l'operatore e **non sono ancora state eseguite**: i posti dove
-scriverne l'esito sono segnati nel README, in `REQUIREMENTS.md` §7 e in
-`ARCHITECTURE.md` §9, e finché restano vuoti quei due criteri non vanno letti
-come superati.
+**P0 → P6 completate**, T-36 → T-43: scaffolding, modelli e admin, ingestione,
+recupero e generazione, API REST, asincronia, e infine test e consegna — suite
+pytest (29 test), `excerpt_length` promosso a configurazione,
+`scripts/dimostrazione.ps1`, documentazione di consegna e le due prove finali.
+**Tutti e dieci i criteri di accettazione hanno un esito registrato**, ciascuno
+con come è stato ottenuto, nel README e in `REQUIREMENTS.md` §7.
+
+Le due prove di consegna del 26/07/2026 sono costate **due giri ciascuna**, e in
+entrambi i casi il primo giro è servito: T-42 ha scoperto che **nessuno** dei
+comandi `curl` del README funzionava su Windows (alias di `Invoke-WebRequest`,
+continuazione `\`, quoting bash del JSON), T-43 che il verbale non conteneva il
+log del worker che aveva svolto il lavoro, perché `db_worker` avvia
+l'autoreloader e l'orfano sopravvive all'arresto del padre. Chi rifà quelle prove
+si aspetti di trovare qualcosa: è ciò per cui esistono.
 
 L'ingestione è **asincrona** da P5 su tutti gli inneschi HTTP e dell'admin: la
 `POST /api/documents/` risponde **202** in ~0,9 s contro i 14,53 s che costava a

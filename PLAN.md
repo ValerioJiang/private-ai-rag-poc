@@ -118,10 +118,12 @@ nella strategia `similarity_score_threshold` e la pipeline predefinita usa
 `similarity`. Cfr. ARCHITECTURE §7.7.
 
 **T-42** (prova da zero su ambiente pulito, CA-1) e **T-43** (prova a rete
-staccata, RNF-01 e CA-9) richiedono l'operatore e non sono ancora state
-eseguite: finché non lo sono, quei due criteri restano senza esito, e i posti
-dove scriverlo sono segnati nel README, in `REQUIREMENTS.md` §7 e in
-`ARCHITECTURE.md` §9.
+staccata, RNF-01 e CA-9) sono state eseguite il 26/07/2026 con l'operatore.
+Entrambe hanno chiuso il loro criterio, ed entrambe hanno richiesto **due giri**:
+T-42 perché il primo ha scoperto che nessuno dei comandi `curl` del README
+funzionava su Windows, T-43 perché il primo verbale non conteneva il log del
+worker che aveva svolto il lavoro. Sono i difetti che quelle prove esistevano per
+trovare, e trovarli è il loro esito utile.
 
 ## Fuori scope (da dichiarare nel README come limiti noti)
 

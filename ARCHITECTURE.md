@@ -952,19 +952,94 @@ e si rifà la prova completa — upload di un PDF, domanda, risposta con fonti. 
 funziona senza connettività, nessun contenuto sta uscendo. È una dimostrazione
 più forte di qualunque elenco di dipendenze.
 
-> **Esito della prova a rete staccata (T-43, CA-9): _da compilare_.** La prova
-> non è ancora stata eseguita, e finché questa riga resta com'è la garanzia è
-> **argomentata, non verificata**. Vanno riportati qui: la data, quali interfacce
-> sono state disattivate e come, l'uscita del ciclo completo (caricamento,
-> indicizzazione da parte del worker, domanda pertinente, domanda fuori tema), il
-> confronto dei tempi con quelli a rete attiva — **non devono differire**, ed è
-> questo l'argomento — e i log del worker, dove un tentativo di uscita fallito
-> comparirebbe come errore di risoluzione DNS o di connessione.
->
-> Ciò che è già misurato riguarda i soli test e **non** sostituisce la prova: la
-> suite passa identica col client di inferenza puntato su una porta chiusa (29
-> passed in 10,39 s, 25/07/2026), il che dimostra che i test non toccano la rete,
-> non che il sistema in esercizio non la tocchi.
+> **Esito della prova a rete staccata (T-43, CA-9): SUPERATA il 26/07/2026,
+> ore 12:48:33.** Da qui in avanti RNF-01 è **verificato**, non più soltanto
+> argomentato.
+
+**Procedura seguita.** Wi-Fi disattivata dall'interfaccia di Windows; Ethernet e
+Bluetooth già scollegate; il client VPN Tailscale, che risultava attivo in un
+tentativo precedente, **disinstallato** prima della prova — una VPN attiva è un
+percorso per cui il traffico esce, e lasciarla su avrebbe reso la prova
+discutibile. È rimasta «Up» la sola `vEthernet (WSL)`, che è un adattatore
+virtuale interno alla macchina. Il ciclo è stato eseguito da
+`scripts/prova-rete-staccata.ps1`, che si conduce da solo e lascia un verbale su
+disco: a rete staccata nessuno può guidare la prova dall'esterno, ed è la ragione
+per cui quello script esiste.
+
+**Che l'esterno fosse davvero irraggiungibile è stato misurato, non presunto** —
+altrimenti i passi seguenti non proverebbero nulla:
+
+| Bersaglio | Esito |
+|---|---|
+| `api.smith.langchain.com:443` | irraggiungibile — *No such host is known* |
+| `pypi.org:443` | irraggiungibile — *No such host is known* |
+| un terzo host pubblico su `:443` | irraggiungibile — *No such host is known* |
+| `1.1.1.1:443`, **per indirizzo e non per nome** | irraggiungibile — *socket operation attempted to an unreachable host* |
+| risoluzione DNS | non risolta — timeout |
+
+I bersagli non sono host qualunque: sono i servizi che **RNF-01 nomina** — 
+LangSmith, che `settings/base.py` disattiva d'ufficio perché si accenderebbe da
+solo trovando la variabile d'ambiente, e i due provider presenti negli enum come
+alternative non attivabili. `1.1.1.1` si prova **per indirizzo**, così un DNS
+morto non maschera una rotta ancora viva.
+
+Mentre `127.0.0.1:5434` (PostgreSQL) e `127.0.0.1:11434` (Ollama) rispondevano
+entrambi: è l'altra metà dell'argomento, e il punto dell'architettura.
+
+**Il ciclo completo è riuscito.** Un PDF **mai indicizzato prima**, generato per
+l'occasione: `POST /api/documents/` → **202** in 1,01 s, indicizzato dal worker
+in 4,07 s (1 pagina, 1 segmento), domanda pertinente con risposta corretta e 4
+fonti citate in 4,07 s (recupero 1 111 ms, generazione 1 948 ms), domanda fuori
+tema con la dichiarazione di non conoscenza. Le quattro voci di `/health` verdi.
+
+**I tempi non differiscono da quelli a rete attiva,** ed è questo l'argomento: se
+un percorso del codice chiamasse un servizio remoto, staccare la rete lo farebbe
+attendere un timeout, e il confronto lo mostrerebbe.
+
+| Passo | T-42, rete attiva | T-43, rete staccata |
+|---|---|---|
+| caricamento (202) | 0,95 s | 1,01 s |
+| indicizzazione | 7,50 s | 4,07 s |
+| domanda pertinente | 13,53 s | 4,07 s |
+
+Perché il confronto valga i modelli devono essere caldi da entrambe le parti: la
+prova esegue prima un giro di riscaldamento **non misurato** (33,94 s, coi due
+modelli da caricare in memoria). Senza, un'indicizzazione da 25 s si sarebbe
+prestata a essere letta come un timeout invece che come il caricamento di
+`bge-m3`.
+
+**I log dicono più dell'assenza di errori: dicono dove sono andate le chiamate.**
+Nessuna riga di errore DNS o di connessione, in nessuno dei quattro file. Ma
+soprattutto, l'elenco **completo** delle richieste HTTP uscite dai due processi
+nella finestra a rete staccata è questo — dodici richieste, tutte verso
+`localhost:11434`:
+
+```
+worker  POST http://localhost:11434/api/embed   (x4, indicizzazione)
+server  GET  http://localhost:11434/api/tags    (x2, /health)
+server  POST http://localhost:11434/api/embed   (x3, embedding delle domande)
+server  POST http://localhost:11434/api/chat    (x3, generazione)
+```
+
+È una prova affermativa e non solo negativa: non «non abbiamo trovato traffico in
+uscita», ma «tutto il traffico che c'è stato è elencato qui, e va a localhost».
+
+**Un difetto della prima esecuzione, corretto.** Il primo tentativo, alle 12:11
+dello stesso giorno, riuscì in ogni passo ma il suo verbale non conteneva il log
+del worker che aveva fatto il lavoro: `manage.py db_worker` avvia l'autoreloader
+e l'ingestione avviene in un processo *figlio*, che sopravviveva all'arresto del
+padre e continuava a consumare la coda. A indicizzare fu un orfano di
+un'esecuzione precedente, il cui log stava in un altro file. Lo script ora passa
+`--no-reload`, si rifiuta di partire se trova altri worker vivi, e pretende che
+il log del proprio worker contenga almeno un'ingestione completata prima di
+dichiarare l'esito — perché l'assenza di errori in un file vuoto non è un
+risultato. L'esecuzione qui riportata è quella successiva alla correzione.
+
+**Cosa questa prova non copre.** Che nessun traffico sia uscito *mentre la rete
+era staccata* non dimostra che non ne uscirebbe a rete attiva per un percorso che
+a rete staccata fallisce in silenzio. A escluderlo concorrono gli altri argomenti
+di questa sezione — le dipendenze assenti, `LANGSMITH_TRACING` forzato — e i tre
+limiti dichiarati qui sotto, il primo dei quali resta il vero varco.
 
 Cosa **non** è garantito, e va detto:
 

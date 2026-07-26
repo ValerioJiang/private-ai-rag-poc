@@ -312,10 +312,19 @@ Il filtro di RF-14 esiste, funziona ed è coperto da un test, ma si attiva
 scegliendo quella strategia dall'admin. Dichiarato nel README (CA-4 e limiti
 noti) e in ARCHITECTURE §7.7.
 
-**Debiti e limiti residui alla consegna.** In primo luogo **T-42 e T-43 non sono
-state eseguite**: finché non lo sono, CA-1 e CA-9 restano senza esito e RNF-01 è
-argomentato, non verificato. I posti dove scrivere l'esito sono già segnati nel
-README, in `REQUIREMENTS.md` §7 e in `ARCHITECTURE.md` §9. Restano poi, tutti
+**T-42 e T-43 sono state eseguite il 26/07/2026, e P6 è chiusa per intero.**
+T-42 ha ricostruito l'ambiente da zero seguendo il solo README ed è **superata al
+secondo giro**: il primo ha scoperto tre difetti nei comandi `curl` per Windows —
+`curl` alias di `Invoke-WebRequest`, continuazione di riga `\`, quoting bash del
+JSON — nessuno dei quali funzionava sulla macchina di consegna. Corretti e
+sequenza rieseguita dall'azzeramento. T-43 ha rifatto il ciclo completo a
+interfacce disattivate: RNF-01 passa da argomentato a **verificato**, e CA-9 ha
+il suo esito nel README, in `REQUIREMENTS.md` §7 e in `ARCHITECTURE.md` §9. Anche
+T-43 è costata due giri: il primo produceva un verbale senza il log del worker
+che aveva svolto il lavoro, perché `db_worker` avvia l'autoreloader e l'orfano
+sopravviveva all'arresto del padre continuando a consumare la coda.
+
+**Debiti e limiti residui alla consegna**, tutti
 dichiarati nella sezione «Limiti noti» del README con la loro misura: nessun
 retry automatico dei task falliti; nessun lucchetto contro il doppio
 accodamento; worker a freddo **12,4 s** contro 2,7 s a caldo; `_memoizza()` non

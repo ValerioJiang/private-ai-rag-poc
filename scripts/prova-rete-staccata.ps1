@@ -253,7 +253,7 @@ function Cerca-ErroriDiRete {
         "11001", "11002", "10051", "10065",
         "NameResolutionError", "ConnectError", "ConnectTimeout", "ReadTimeout",
         "Max retries exceeded", "SSLError", "certificate", "urllib3",
-        "langsmith", "api\.smith", "openai\.com", "huggingface", "anthropic"
+        "langsmith", "api\.smith", "openai\.com", "huggingface", "langfuse"
     )
     $modello = ($sospetti -join "|")
     $trovati = @(Select-String -Path $Percorso -Pattern $modello -AllMatches -ErrorAction SilentlyContinue)
@@ -318,11 +318,21 @@ try {
     # riuscissero, i passi seguenti non dimostrerebbero nulla: si fermerebbe qui.
     Scrivi-Titolo 2 "L'esterno deve essere IRRAGGIUNGIBILE"
     $c = [Diagnostics.Stopwatch]::StartNew()
+    # I bersagli NON sono host qualunque: sono i servizi che RNF-01 nomina, cioe'
+    # quelli verso cui il testo dei documenti potrebbe uscire se una dipendenza
+    # o una variabile d'ambiente rientrasse dalla finestra. LangSmith perche'
+    # settings/base.py forza LANGSMITH_TRACING=false proprio per impedirgli di
+    # accendersi da solo; OpenAI e HuggingFace perche' sono i due provider
+    # presenti negli enum come alternative documentate e non attivabili. pypi.org
+    # e 1.1.1.1 completano: il primo e' l'uscita piu' banale, il secondo si prova
+    # per indirizzo e non per nome, cosi' un DNS morto non maschera una rotta
+    # ancora viva.
     $bersagli = @(
-        @{ Nome = "api.anthropic.com"; Porta = 443 },
-        @{ Nome = "pypi.org";          Porta = 443 },
         @{ Nome = "api.smith.langchain.com"; Porta = 443 },
-        @{ Nome = "1.1.1.1";           Porta = 443 }
+        @{ Nome = "api.openai.com";          Porta = 443 },
+        @{ Nome = "huggingface.co";          Porta = 443 },
+        @{ Nome = "pypi.org";                Porta = 443 },
+        @{ Nome = "1.1.1.1";                 Porta = 443 }
     )
     $raggiungibili = New-Object System.Collections.ArrayList
     foreach ($b in $bersagli) {
@@ -338,12 +348,12 @@ try {
     # La risoluzione DNS a parte: e' il primo anello che si spezza staccando la
     # rete, ed e' l'errore che comparirebbe nei log se qualcosa provasse a uscire.
     try {
-        $dns = Resolve-DnsName -Name "api.anthropic.com" -DnsOnly -QuickTimeout -ErrorAction Stop
-        Write-Host ("       DNS api.anthropic.com   RISOLTO — {0}" -f (($dns | Where-Object { $_.IPAddress } | Select-Object -First 1).IPAddress)) -ForegroundColor Red
+        $dns = Resolve-DnsName -Name "api.smith.langchain.com" -DnsOnly -QuickTimeout -ErrorAction Stop
+        Write-Host ("       DNS api.smith.langchain.com   RISOLTO — {0}" -f (($dns | Where-Object { $_.IPAddress } | Select-Object -First 1).IPAddress)) -ForegroundColor Red
         [void]$raggiungibili.Add("DNS")
     }
     catch {
-        Write-Host ("       DNS api.anthropic.com   non risolto — {0}" -f $_.Exception.Message.Trim()) -ForegroundColor Green
+        Write-Host ("       DNS api.smith.langchain.com   non risolto — {0}" -f $_.Exception.Message.Trim()) -ForegroundColor Green
     }
 
     if ($raggiungibili.Count -gt 0) {
