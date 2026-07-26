@@ -50,11 +50,14 @@ nvidia-container-toolkit. I container lo raggiungono via `host.docker.internal`.
 
 ## Avvio
 
-```bash
+I comandi sono scritti per **Windows PowerShell**, che è la macchina di
+consegna; per Linux/macOS la traduzione è annotata riga per riga.
+
+```powershell
 ollama pull qwen2.5:7b-instruct
 ollama pull bge-m3
 
-cp .env.example .env
+cp .env.example .env            # `cp` in PowerShell è un alias di Copy-Item
 docker compose up -d db
 
 python -m venv .venv
@@ -67,8 +70,18 @@ python manage.py runserver
 
 E, **in un secondo terminale**, il worker che indicizza i documenti:
 
-```bash
+```powershell
 python manage.py db_worker
+```
+
+`createsuperuser` è interattivo. Chi automatizza — script di collaudo, CI —
+usa la variante non interattiva, che prende le credenziali dall'ambiente:
+
+```powershell
+$env:DJANGO_SUPERUSER_USERNAME = "dimostrazione"
+$env:DJANGO_SUPERUSER_EMAIL    = "dimostrazione@example.invalid"
+$env:DJANGO_SUPERUSER_PASSWORD = "..."
+python manage.py createsuperuser --noinput
 ```
 
 Admin su http://localhost:8000/admin/ · stato del servizio su `/health`.
@@ -78,6 +91,29 @@ consuete sono spesso già occupate da altri stack. Il valore sta in
 `.env.example`, quindi i comandi qui sopra funzionano così come sono; serve
 saperlo solo per collegarsi al database dall'esterno. Dentro la rete di Compose
 vale invece la porta interna 5432.
+
+### `curl` su Windows PowerShell: si scrive `curl.exe`
+
+Tre differenze che fanno fallire i comandi di questo README se si copiano nella
+forma bash. Sono **misurate** sulla macchina di consegna (PowerShell 5.1) durante
+la prova da zero di T-42, non dedotte: sono state la scoperta di quella prova, e
+sono la ragione per cui è stata rifatta da capo.
+
+1. **`curl` è un alias di `Invoke-WebRequest`**, non il programma `curl`.
+   `curl -u utente:password …` risponde *«the parameter name 'u' is ambiguous»* e
+   non parte alcuna richiesta. Il programma c'è — `C:\windows\system32\curl.exe`
+   — e va invocato **con l'estensione**: `curl.exe`. Su Linux/macOS `curl` va
+   bene così com'è.
+2. **La continuazione di riga è il backtick `` ` ``, non `\`.** Una `\` a fine
+   riga spezza il comando e curl riceve i pezzi come URL separati.
+3. **Le virgolette doppie dentro un corpo JSON vanno protette con `\"`**, e
+   l'apostrofo dentro una stringa fra apici singoli si raddoppia. La forma bash
+   `-d '{"domanda": "…all'\''anno?"}'` in PowerShell è tornata con cinque
+   `HTTP 000` ed exit 3; la forma che funziona è
+   `-d '{\"domanda\": \"…all''anno?\"}'`.
+
+I blocchi che seguono sono già scritti in questa forma. Chi legge da Linux o
+macOS toglie l'estensione, sostituisce i backtick con `\` e usa il quoting bash.
 
 ### Il worker, e come farne a meno
 
@@ -90,7 +126,7 @@ avviene dopo.
 La coda vive in PostgreSQL, quindi non c'è alcun servizio in più da avviare: il
 worker è `python manage.py db_worker` sull'host, oppure, in Compose,
 
-```bash
+```powershell
 docker compose --profile worker up --build
 ```
 
@@ -124,7 +160,7 @@ all'upload torna a durare quanto l'indicizzazione, ma non serve alcun worker.
 La tabella dei task cresce a ogni indicizzazione ed è il registro storico della
 coda. Si pota quando dà fastidio:
 
-```bash
+```powershell
 python manage.py prune_db_task_results
 ```
 
@@ -132,16 +168,15 @@ python manage.py prune_db_task_results
 
 Dall'ambiente spento alla prima risposta con le fonti citate.
 
-I tempi riportati qui sotto sono **misurati** il 25/07/2026 sulla macchina di
-sviluppo con lo script di dimostrazione (T-41), e sono riportati per far
-distinguere un'attesa normale da un guasto — non sono un impegno di prestazioni.
-I tempi dei passi di installazione (`pip install`, `migrate`) non sono ancora
-stati cronometrati: li compilerà la prova da zero su ambiente pulito (T-42, cfr.
-[Criteri di accettazione](#criteri-di-accettazione)).
+I tempi riportati qui sotto sono **misurati** sulla macchina di sviluppo — quelli
+di esercizio il 25/07/2026 con lo script di dimostrazione (T-41), quelli di
+installazione il 26/07/2026 durante la prova da zero su ambiente pulito (T-42).
+Servono a far distinguere un'attesa normale da un guasto: non sono un impegno di
+prestazioni.
 
 **1. I modelli, una volta sola.**
 
-```bash
+```powershell
 ollama pull qwen2.5:7b-instruct
 ollama pull bge-m3
 ollama list          # devono comparire entrambi
@@ -149,7 +184,7 @@ ollama list          # devono comparire entrambi
 
 **2. Database, dipendenze, schema.**
 
-```bash
+```powershell
 cp .env.example .env
 docker compose up -d db
 python -m venv .venv
@@ -165,17 +200,35 @@ python manage.py createsuperuser
 configurazione predefinita funzionante (RF-26): il sistema è utilizzabile senza
 configurare nulla a mano.
 
+Quanto costa questo passo, **misurato in T-42** su volume del database e
+virtualenv appena ricreati (`docker compose down -v`, `.venv` cancellata):
+
+| Comando | Tempo |
+|---|---|
+| `ollama pull` dei due modelli | 0,92 s + 0,73 s — **già scaricati**: la prima volta sono 5,9 GB di rete |
+| `docker compose up -d db` | 1,35 s (il comando torna subito; il contenitore diventa *healthy* in pochi secondi) |
+| `python -m venv .venv` | 13,81 s |
+| `pip install -r requirements.txt` | **125,71 s**, con la cache dei wheel già popolata; senza cache va aggiunto il download di 58 pacchetti |
+| `python manage.py migrate` | **9,38 s** — 45 migrazioni, `CREATE EXTENSION vector` compresa |
+| `createsuperuser --noinput` | 3,99 s |
+| avvio di `runserver` fino al primo `/health` utile | 5,54 s |
+
+Sono i tempi del **secondo** giro della prova, quello eseguito sul README
+corretto; il primo giro aveva dato 22,89 s per `venv` e 172,20 s per `pip`, sulla
+stessa macchina e con le stesse cache. La differenza è rumore di macchina, non
+un effetto delle correzioni: si legga l'ordine di grandezza, non la cifra.
+
 **3. I due processi.**
 
-```bash
+```powershell
 python manage.py runserver      # terminale 1
 python manage.py db_worker      # terminale 2
 ```
 
 **4. I presupposti, in una richiesta.**
 
-```bash
-curl http://localhost:8000/health
+```powershell
+curl.exe --max-time 30 http://localhost:8000/health
 ```
 
 Attesa: `"status": "ok"` e quattro voci — `database`, `pgvector`, `ollama`,
@@ -185,17 +238,17 @@ riprodurrebbero soltanto in forma meno leggibile.
 
 **5. Il PDF di esempio.**
 
-```bash
-curl -u utente:password -F "file=@samples/manuale-dipendenti.pdf" \
-     http://localhost:8000/api/documents/
+```powershell
+curl.exe --max-time 30 -u utente:password `
+     -F "file=@samples/manuale-dipendenti.pdf" http://localhost:8000/api/documents/
 ```
 
 Attesa: **202 Accepted**, documento in stato `pending`, zero pagine e zero
 segmenti — la `POST` accoda, non indicizza. L'`id` che restituisce è quello da
 interrogare finché lo stato non cambia:
 
-```bash
-curl -u utente:password http://localhost:8000/api/documents/<id>/
+```powershell
+curl.exe --max-time 30 -u utente:password http://localhost:8000/api/documents/<id>/
 ```
 
 Attesa: `"status": "indexed"`, `"page_count": 3`, `"chunk_count": 3`.
@@ -207,9 +260,9 @@ Rieseguendo lo stesso caricamento la risposta è **409** con
 
 **6. La prima domanda.**
 
-```bash
-curl -u utente:password -H "Content-Type: application/json" --max-time 300 \
-     -d '{"domanda": "Quanti giorni di ferie si maturano all'\''anno?"}' \
+```powershell
+curl.exe --max-time 300 -u utente:password -H "Content-Type: application/json" `
+     -d '{\"domanda\": \"Quanti giorni di ferie si maturano all''anno?\"}' `
      http://localhost:8000/api/ask/
 ```
 
@@ -258,32 +311,34 @@ Il rapporto fra i due totali — 211 s contro 18 s — è quasi interamente il p
 caricamento del modello di generazione.
 
 Lo script è **solo PowerShell**, per la ragione dichiarata fra i
-[limiti noti](#limiti-noti); la via portabile sono i `curl` della sezione
-[API](#api), che coprono gli stessi endpoint.
+[limiti noti](#limiti-noti); l'alternativa sono i `curl` della sezione
+[API](#api), che coprono gli stessi endpoint uno per uno e si traducono in bash
+con le tre regole del [riquadro qui sopra](#curl-su-windows-powershell-si-scrive-curlexe),
+lette al contrario.
 
 ## API
 
 Tutti gli endpoint sotto `/api/` richiedono autenticazione (Basic o sessione);
 `/health` è anonimo di proposito, perché è la sonda del Compose.
 
-```bash
+```powershell
 # Caricamento di un PDF — risponde 202 e mette il documento in coda
-curl -u utente:password -F "file=@samples/manuale-dipendenti.pdf" \
-     http://localhost:8000/api/documents/
+curl.exe --max-time 30 -u utente:password `
+     -F "file=@samples/manuale-dipendenti.pdf" http://localhost:8000/api/documents/
 
 # Stato del documento: e' qui che si scopre com'e' finita
-curl -u utente:password http://localhost:8000/api/documents/55/
+curl.exe --max-time 30 -u utente:password http://localhost:8000/api/documents/55/
 
 # Elenco, filtrabile per stato
-curl -u utente:password "http://localhost:8000/api/documents/?status=indexed"
+curl.exe --max-time 30 -u utente:password "http://localhost:8000/api/documents/?status=indexed"
 
 # Interrogazione
-curl -u utente:password -H "Content-Type: application/json" --max-time 300 \
-     -d '{"domanda": "Quanti giorni di ferie si maturano?"}' \
+curl.exe --max-time 300 -u utente:password -H "Content-Type: application/json" `
+     -d '{\"domanda\": \"Quanti giorni di ferie si maturano?\"}' `
      http://localhost:8000/api/ask/
 
 # Configurazioni disponibili
-curl -u utente:password http://localhost:8000/api/pipelines/
+curl.exe --max-time 30 -u utente:password http://localhost:8000/api/pipelines/
 ```
 
 **`POST /api/documents/` risponde `202 Accepted`, non `201`**, e la risorsa che
@@ -316,7 +371,7 @@ caldo si sta sotto i 3 s di generazione (1 380 ms misurati).
 Le stesse operazioni disponibili dall'admin esistono come comandi di gestione,
 per prova e automazione:
 
-```bash
+```powershell
 python manage.py ingest samples/manuale-dipendenti.pdf
 python manage.py ingest samples/manuale-dipendenti.pdf --async
 python manage.py ask "Quanti giorni di ferie si maturano all'anno?"
@@ -341,7 +396,7 @@ un worker in esecuzione.
 
 ## Test
 
-```bash
+```powershell
 docker compose up -d db
 pytest
 ```
@@ -396,16 +451,16 @@ la prova non è ancora stata eseguita, e la riga non va letta come superata.
 
 | # | Criterio | Come verificarlo | Esito rilevato |
 |---|---|---|---|
-| **CA-1** | L'ambiente si avvia da zero seguendo il solo README | Macchina pulita: `docker compose down -v`, `.venv` ricostruito, poi [Avvio](#avvio) e [Prova guidata](#prova-guidata) senza supplire con conoscenza pregressa | **Da compilare dopo T-42.** Un solo presupposto è già misurato: il ruolo `rag` è superuser, quindi `pytest` non richiede passi aggiuntivi |
-| **CA-2** | Un PDF caricato passa a *indicizzato* con pagine e segmenti | Passo 5 della prova guidata, oppure `scripts\dimostrazione.ps1` (passo 3), oppure l'admin | **Superato** via API e worker: documento 62 `indexed`, **3 pagine, 3 segmenti** in 17,13 s (T-41). Coperto anche da `test_un_pdf_con_testo_arriva_a_indicizzato`, e verificato dall'admin in P2 con `django.test.Client` — stessa pila, senza rendering visivo. La lettura in un **browser** resta a T-42 |
-| **CA-3** | Una domanda sul contenuto riceve una risposta con le fonti | Passo 6 della prova guidata, oppure `dimostrazione.ps1` (passo 4), che fallisce se le fonti sono zero | **Superato:** «Si maturano 26 giorni di ferie all'anno.» con 3 fonti — p. 1 **0,6831**, p. 3 0,4577, p. 2 0,3725 — e i tempi separati (recupero 1 044 ms, generazione 1 380 ms). Coperto anche da `test_una_domanda_pertinente_riceve_risposta_e_fonti` |
-| **CA-4** | Una domanda fuori contenuto ottiene la non-risposta | `dimostrazione.ps1` (passo 5), che **dichiara quale** dei due meccanismi ha agito | **Superato, ma non dal meccanismo che ci si aspetta**: cfr. il riquadro qui sotto. La dichiarazione di non conoscenza arriva; in configurazione predefinita la produce il **prompt di sistema**, non la soglia |
-| **CA-5** | Temperatura o prompt modificati cambiano la risposta, senza riavvio | Admin → `LLMProfile.temperature` o `PromptTemplate.text`, poi ripetere il passo 6 | **Superato in P3** con criterio stretto: temperatura cambiata dall'admin su un `runserver` in un **processo separato** — a 0 due esecuzioni danno lo stesso testo, a 1.8 testi diversi, senza riavvio. Da ripetere in T-42 sull'ambiente pulito |
-| **CA-6** | Cambiando i segmenti recuperati cambia il numero di fonti | Admin → `RetrievalProfile.top_k`, poi ripetere il passo 6 | **Superato in P4 e P5:** `top_k` cambiato da un **terzo** processo porta le fonti da 4 a 2 e **di nuovo a 4**, coi pid di server e worker invariati. Il ritorno al valore iniziale esclude che il numero dipendesse dai segmenti disponibili |
-| **CA-7** | Due pipeline sulla stessa base danno risposte diverse | `GET /api/pipelines/`, poi `POST /api/ask/` con `pipeline` esplicita | **Superato in P4:** due pipeline che differiscono **solo** per il prompt danno risposte diverse sulle stesse fonti |
-| **CA-8** | Un PDF corrotto o solo immagine va in *fallito* con motivo | Caricare un PDF di sole immagini, poi `GET /api/documents/{id}/` | **Superato:** `202` e poi `failed` con `error_message` leggibile (P5, con `curl` vero). Coperto dai due casi di `test_un_pdf_non_indicizzabile_…` — scansione senza OCR e file illeggibile — che verificano stato **e** motivo persistiti. Verificato dall'admin in P2 con `django.test.Client`; la lettura in un **browser** resta a T-42 |
+| **CA-1** | L'ambiente si avvia da zero seguendo il solo README | Macchina pulita: `docker compose down -v`, `.venv` ricostruito, poi [Avvio](#avvio) e [Prova guidata](#prova-guidata) senza supplire con conoscenza pregressa | **Superato al secondo giro** (T-42, 26/07/2026). Il primo giro ha scoperto **tre difetti**, tutti nel modo in cui il README scriveva i `curl` per una macchina Windows: `curl` alias di `Invoke-WebRequest`, continuazione di riga `\`, quoting del corpo JSON. Corretti — cfr. [`curl` su Windows PowerShell](#curl-su-windows-powershell-si-scrive-curlexe) — e la sequenza è stata rieseguita da capo dall'azzeramento: volume, `media/` e `.venv` ricreati, e dall'ambiente spento alla prima risposta con le fonti **nessun passo implicito**. La sola aggiunta, dichiarata, è la variante non interattiva di `createsuperuser`, ora documentata |
+| **CA-2** | Un PDF caricato passa a *indicizzato* con pagine e segmenti | Passo 5 della prova guidata, oppure `scripts\dimostrazione.ps1` (passo 3), oppure l'admin | **Superato** via API e worker: documento 62 `indexed`, **3 pagine, 3 segmenti** in 17,13 s (T-41), e ripetuto sull'ambiente ricostruito di T-42 — documento 1, stesse 3 pagine e 3 segmenti, **7,50 s** dall'accodamento a `indexed` con worker a freddo. Coperto anche da `test_un_pdf_con_testo_arriva_a_indicizzato`. **Nell'admin:** la changelist `/admin/rag/document/`, richiesta al `runserver` vivo con una sessione autenticata vera (login sul form, cookie `sessionid`), riporta la riga «manuale-dipendenti.pdf · Base di conoscenza predefinita · Indicizzato · 3 · 3». È HTML servito dall'applicazione, **non** una pagina guardata in un browser: quella lettura visiva non è stata fatta, e non va data per fatta |
+| **CA-3** | Una domanda sul contenuto riceve una risposta con le fonti | Passo 6 della prova guidata, oppure `dimostrazione.ps1` (passo 4), che fallisce se le fonti sono zero | **Superato:** «Si maturano 26 giorni di ferie all'anno.» con 3 fonti — p. 1 **0,6831**, p. 3 0,4577, p. 2 0,3725 — e i tempi separati (recupero 1 044 ms, generazione 1 380 ms). **Riprodotto identico** sull'ambiente ricostruito di T-42, stessa risposta e stessi tre punteggi alla quarta cifra, su un database creato da zero. Coperto anche da `test_una_domanda_pertinente_riceve_risposta_e_fonti` |
+| **CA-4** | Una domanda fuori contenuto ottiene la non-risposta | `dimostrazione.ps1` (passo 5), che **dichiara quale** dei due meccanismi ha agito | **Superato, ma non dal meccanismo che ci si aspetta**: cfr. il riquadro qui sotto. La dichiarazione di non conoscenza arriva; in configurazione predefinita la produce il **prompt di sistema**, non la soglia. Confermato in T-42 sull'ambiente pulito: «Non dispongo di questa informazione nei documenti forniti.» con 3 segmenti passati all'LLM, punteggi **0,2192 / 0,1946 / 0,1659** — gli stessi di T-41 |
+| **CA-5** | Temperatura o prompt modificati cambiano la risposta, senza riavvio | Admin → `LLMProfile.temperature` o `PromptTemplate.text`, poi ripetere il passo 6 | **Superato in P3 e ripetuto in T-42** sull'ambiente pulito, con criterio stretto: `LLMProfile.temperature` cambiata da un **terzo** processo, su server e worker mai riavviati (pid invariati prima e dopo). A **0.0** due esecuzioni della stessa domanda danno un testo identico carattere per carattere; a **1.8** le due esecuzioni differiscono fra loro e dalla prima — «Il lavoro da remoto è consentito fino a 3 giorni settimanali…» contro un elenco puntato. Nessun riavvio fra le quattro richieste |
+| **CA-6** | Cambiando i segmenti recuperati cambia il numero di fonti | Admin → `RetrievalProfile.top_k`, poi ripetere il passo 6 | **Superato in P4 e P5:** `top_k` cambiato da un **terzo** processo porta le fonti da 4 a 2 e **di nuovo a 4**, coi pid di server e worker invariati. Il ritorno al valore iniziale esclude che il numero dipendesse dai segmenti disponibili. **Ripetuto in T-42** con quattro valori consecutivi sullo stesso server: `top_k` 4 → 2 → 1 → 4 dà **3 → 2 → 1 → 3** fonti, e gli otto pid python sono gli stessi prima e dopo (il documento ha 3 segmenti, quindi `top_k` 4 ne può restituire al più 3) |
+| **CA-7** | Due pipeline sulla stessa base danno risposte diverse | `GET /api/pipelines/`, poi `POST /api/ask/` con `pipeline` esplicita | **Superato in P4 e ripetuto in T-42:** creata «Pipeline telegrafica», identica alla predefinita per base di conoscenza, `LLMProfile` e `RetrievalProfile`, **diversa solo per il prompt**. Sulla stessa domanda le due risposte differiscono — elenco puntato contro una frase unica — mentre le fonti sono **le stesse tre, con gli stessi punteggi** (p. 3 0,6153 · p. 2 0,5342 · p. 1 0,4539): la differenza viene dal prompt e da nient'altro |
+| **CA-8** | Un PDF corrotto o solo immagine va in *fallito* con motivo | Caricare un PDF di sole immagini, poi `GET /api/documents/{id}/` | **Superato:** `202` e poi `failed` con `error_message` leggibile (P5, con `curl` vero). **Ripetuto in T-42** su un PDF di sola immagine generato per la prova: `202`, poi `failed` con «Nessun testo estraibile dalle 1 pagine del documento. E' probabilmente una scansione senza OCR: …». Il sistema non ne è compromesso — la domanda successiva ha risposto `200` con le sue tre fonti. Coperto dai due casi di `test_un_pdf_non_indicizzabile_…`. **Nell'admin:** la changelist mostra «solo-immagine.pdf · Fallito · 0 · 0» e la pagina di dettaglio porta il motivo per esteso; anche qui è HTML servito dal `runserver` su sessione autenticata, **non** una pagina guardata in un browser |
 | **CA-9** | Nessuna chiamata di rete verso servizi terzi | Staccare **tutte** le interfacce di rete e rifare il ciclo completo: caricamento, indicizzazione, domanda pertinente, domanda fuori tema (ARCHITECTURE §9) | **Da compilare dopo T-43.** Ciò che è già misurato riguarda i soli test, non il sistema in esercizio: la suite passa col client di inferenza su una porta chiusa |
-| **CA-10** | La suite di test passa | `docker compose up -d db` e poi `pytest` | **Superato:** **29 passed in 10,44 s**, e **29 passed in 10,39 s** con `OLLAMA_BASE_URL` puntato su una porta chiusa |
+| **CA-10** | La suite di test passa | `docker compose up -d db` e poi `pytest` | **Superato:** **29 passed in 10,44 s**, e **29 passed in 10,39 s** con `OLLAMA_BASE_URL` puntato su una porta chiusa. **Ripetuto in T-42** sul virtualenv appena ricostruito — **29 passed in 7,52 s** — che è anche la prova che `pytest` e `pytest-django` stanno davvero in `requirements.txt` e non solo nell'ambiente di sviluppo precedente |
 
 > **CA-4: quale meccanismo lo regge davvero.** Il criterio è soddisfatto, ma
 > l'origine della non-risposta va detta, perché chi valuta la scoprirebbe da sé.
@@ -480,7 +535,13 @@ funzionalità presente ma non funzionante.
 
 - **Lo script di dimostrazione è solo PowerShell.** Non esiste un gemello `.sh`:
   la macchina di consegna è Windows, e uno script mai eseguito è peggio della sua
-  assenza. La via portabile sono i `curl` della sezione [API](#api).
+  assenza. L'alternativa sono i `curl` della sezione [API](#api).
+- **Anche i comandi del README sono scritti per PowerShell**, per la stessa
+  ragione: sono la forma che è stata *eseguita* in T-42, non una forma plausibile.
+  Su Linux e macOS vanno tradotti, e la traduzione è meccanica —
+  [tre regole](#curl-su-windows-powershell-si-scrive-curlexe) lette al contrario.
+  Una versione precedente li dava in forma bash e **nessuno di essi funzionava**
+  sulla macchina di consegna: è il difetto che la prova da zero ha scoperto.
 - **Su Windows il launcher del virtualenv raddoppia i processi.** Misurato in P5:
   `.venv\Scripts\python.exe` ri-esegue l'interprete di base come processo
   **figlio**, quindi `runserver` e `db_worker` compaiono due volte anche con

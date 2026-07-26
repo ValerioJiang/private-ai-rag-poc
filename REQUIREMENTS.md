@@ -164,25 +164,27 @@ senza interventi sul codice**.
 Verifiche dimostrabili a fine lavoro; costituiscono anche la traccia della prova
 finale.
 
-La colonna **Esito** riporta lo stato al 25/07/2026, alla chiusura della fase 7
-di P6. Dove dice *da compilare* la prova non è ancora stata eseguita e la riga
-**non** va letta come superata. Il dettaglio di ciascuna verifica — comando,
+La colonna **Esito** riporta lo stato al 26/07/2026, alla chiusura della fase 8
+di P6 (T-42). Dove dice *da compilare* la prova non è ancora stata eseguita e la
+riga **non** va letta come superata: resta il solo CA-9, che attende T-43.
+
+Il dettaglio di ciascuna verifica — comando,
 uscita, misure — sta nella sezione «Criteri di accettazione» del
 [README](README.md#criteri-di-accettazione), che è il documento di consegna;
 qui resta il riferimento.
 
 | # | Criterio | Verifica | Esito |
 |---|---|---|---|
-| **CA-1** | L'ambiente si avvia da zero seguendo il solo README | Esecuzione su macchina pulita | **Da compilare (T-42)** |
-| **CA-2** | Un PDF caricato passa a *indicizzato* e mostra numero di pagine e segmenti | Admin | **Superato** — API e worker (3 pagine, 3 segmenti, T-41), test `test_un_pdf_con_testo_arriva_a_indicizzato`, admin via `django.test.Client` in P2; browser a T-42 |
-| **CA-3** | Una domanda sul contenuto del PDF riceve una risposta corretta con le fonti citate | `POST /api/ask/` | **Superato** — 3 fonti citate con pagina e punteggio (T-41), test `test_una_domanda_pertinente_riceve_risposta_e_fonti` |
+| **CA-1** | L'ambiente si avvia da zero seguendo il solo README | Esecuzione su macchina pulita | **Superato (T-42, 26/07/2026), al secondo giro.** Il primo ha scoperto tre difetti nei comandi `curl` per Windows, corretti nel README; il secondo, da volume e virtualenv ricreati, è filato senza passi impliciti |
+| **CA-2** | Un PDF caricato passa a *indicizzato* e mostra numero di pagine e segmenti | Admin | **Superato** — API e worker (3 pagine, 3 segmenti, T-41 e T-42), test `test_un_pdf_con_testo_arriva_a_indicizzato`, e in T-42 la changelist dell'admin servita dal `runserver` su sessione autenticata («Indicizzato · 3 · 3»). La lettura in un **browser** non è stata fatta e non va data per fatta |
+| **CA-3** | Una domanda sul contenuto del PDF riceve una risposta corretta con le fonti citate | `POST /api/ask/` | **Superato** — 3 fonti citate con pagina e punteggio (T-41), riprodotte identiche in T-42 su database creato da zero, test `test_una_domanda_pertinente_riceve_risposta_e_fonti` |
 | **CA-4** | Una domanda **fuori** dal contenuto dei PDF ottiene una dichiarazione di non conoscenza, non una risposta inventata | `POST /api/ask/` | **Superato, ma dal prompt di sistema e non dalla soglia** nella pipeline predefinita: cfr. ARCHITECTURE §7.7. Il filtro di RF-14 è provato dal test, e si attiva scegliendo `similarity_score_threshold` |
-| **CA-5** | Modificando la temperatura o il prompt dall'admin, la risposta successiva cambia coerentemente, senza riavvio | Admin + API | **Superato in P3** (temperatura 0 contro 1.8, processo separato, nessun riavvio) |
-| **CA-6** | Modificando il numero di segmenti recuperati, cambia il numero di fonti restituite | Admin + API | **Superato in P4 e P5** (fonti da 4 a 2 e di nuovo a 4, pid invariati) |
-| **CA-7** | Due pipeline distinte sulla stessa base di conoscenza producono risposte diverse, selezionabili per richiesta | API | **Superato in P4** (due pipeline che differiscono solo per il prompt) |
-| **CA-8** | Un PDF corrotto o solo immagine porta il documento in stato *fallito* con motivo leggibile, senza compromettere il sistema | Admin | **Superato** — P5 con `curl` vero (202 poi `failed` con motivo) e i due casi di `test_un_pdf_non_indicizzabile_…`; browser a T-42 |
+| **CA-5** | Modificando la temperatura o il prompt dall'admin, la risposta successiva cambia coerentemente, senza riavvio | Admin + API | **Superato in P3 e ripetuto in T-42** (temperatura 0.0 contro 1.8, terzo processo, pid invariati, nessun riavvio) |
+| **CA-6** | Modificando il numero di segmenti recuperati, cambia il numero di fonti restituite | Admin + API | **Superato in P4, P5 e T-42** (in T-42: `top_k` 4 → 2 → 1 → 4 porta le fonti a 3 → 2 → 1 → 3, pid invariati) |
+| **CA-7** | Due pipeline distinte sulla stessa base di conoscenza producono risposte diverse, selezionabili per richiesta | API | **Superato in P4 e T-42** (due pipeline che differiscono solo per il prompt: risposte diverse, fonti e punteggi identici) |
+| **CA-8** | Un PDF corrotto o solo immagine porta il documento in stato *fallito* con motivo leggibile, senza compromettere il sistema | Admin | **Superato** — P5 e T-42 con `curl` vero (202 poi `failed` con motivo, e il sistema resta operativo), i due casi di `test_un_pdf_non_indicizzabile_…`, e in T-42 la riga «Fallito · 0 · 0» più il motivo per esteso nell'admin servito su sessione autenticata. Nessuna lettura in un **browser** |
 | **CA-9** | Nessuna chiamata di rete verso servizi terzi durante ingestione e interrogazione | Ispezione del traffico / assenza di credenziali esterne | **Da compilare (T-43).** Misurato finora solo sui test, che passano col client di inferenza su una porta chiusa |
-| **CA-10** | La suite di test passa | `pytest` | **Superato** — 29 test, 10,44 s; 10,39 s con `OLLAMA_BASE_URL` su porta chiusa |
+| **CA-10** | La suite di test passa | `pytest` | **Superato** — 29 test, 10,44 s; 10,39 s con `OLLAMA_BASE_URL` su porta chiusa; **29 passed in 7,52 s** sul virtualenv ricostruito di T-42 |
 
 ## 8. Fuori ambito
 
