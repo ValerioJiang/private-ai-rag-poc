@@ -387,15 +387,38 @@ try {
     $c = [Diagnostics.Stopwatch]::StartNew()
     if (-not (Test-Path $Python)) { throw "Virtualenv assente: $Python" }
 
+    # PRIMA di avviare i propri: nessun altro worker deve essere in giro.
+    # Un worker gia' vivo prende i task di questa prova al posto del nostro, e
+    # il suo log finisce in un ALTRO file: lo scan del passo 9 esaminerebbe un
+    # file che contiene le sole righe di avvio e direbbe «nessun errore di
+    # rete» senza aver guardato dove il lavoro e' avvenuto. E' successo nella
+    # prova del 26/07/2026 alle 12:11, dove a indicizzare e' stato un orfano
+    # delle 11:55 — l'esito reggeva, ma l'evidenza stava nel file sbagliato.
+    $altriWorker = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match "db_worker|runserver" })
+    if ($altriWorker.Count -gt 0) {
+        $elenco = ($altriWorker | ForEach-Object { "pid $($_.ProcessId)" }) -join ", "
+        throw ("Ci sono gia' {0} processi db_worker/runserver in esecuzione ({1}). " -f $altriWorker.Count, $elenco) +
+              "Prenderebbero i task di questa prova al posto dei processi avviati qui, e il verbale " +
+              "risulterebbe privo del log di chi ha fatto il lavoro. Fermali e riesegui: " +
+              "Get-Process python | Stop-Process -Force"
+    }
+
     $ProcessoServer = Start-Process -FilePath $Python -PassThru -NoNewWindow `
         -WorkingDirectory $Radice `
         -ArgumentList "manage.py", "runserver", "--noreload" `
         -RedirectStandardOutput $LogServerOut -RedirectStandardError $LogServerErr
     Write-Host ("       server avviato, pid {0}" -f $ProcessoServer.Id) -ForegroundColor DarkGray
 
+    # --no-reload NON e' un dettaglio di comodita'. Senza, db_worker avvia
+    # l'autoreloader, che esegue il lavoro in un processo FIGLIO: Stop-Process
+    # uccide il padre e lascia vivo il figlio, che continua a consumare la coda.
+    # Dieci orfani accumulati in un'ora di collaudi, il 26/07/2026, prima che il
+    # controllo qui sopra li rendesse visibili. Vale anche per --noreload del
+    # server, per la stessa ragione.
     $ProcessoWorker = Start-Process -FilePath $Python -PassThru -NoNewWindow `
         -WorkingDirectory $Radice `
-        -ArgumentList "manage.py", "db_worker" `
+        -ArgumentList "manage.py", "db_worker", "--no-reload" `
         -RedirectStandardOutput $LogWorkerOut -RedirectStandardError $LogWorkerErr
     Write-Host ("       worker avviato, pid {0}" -f $ProcessoWorker.Id) -ForegroundColor DarkGray
 
@@ -584,6 +607,19 @@ print(percorso)
     }
     $ProcessoServer = $null; $ProcessoWorker = $null
     Start-Sleep -Seconds 2
+
+    # Il log del worker deve contenere il lavoro di QUESTA prova. Se non lo
+    # contiene, l'assenza di errori di rete al suo interno non significa nulla:
+    # e' l'assenza di qualunque cosa. Senza questo controllo il verbale
+    # dichiarerebbe «nessun errore» avendo letto un file di sole tre righe.
+    Write-Host ""
+    $lavoroSvolto = @(Select-String -Path $LogWorkerErr -Pattern "Ingestione completata" -ErrorAction SilentlyContinue)
+    if ($lavoroSvolto.Count -eq 0) {
+        throw "Il log del worker di questa esecuzione non contiene alcuna ingestione completata: " +
+              "a indicizzare e' stato un ALTRO processo, e il suo log non e' fra gli artefatti di questa prova. " +
+              "Il verbale sarebbe privo dell'evidenza che serve. Ferma ogni processo python e riesegui."
+    }
+    Write-Host ("       il worker di questa prova ha svolto {0} ingestioni: l'evidenza e' nei suoi log" -f $lavoroSvolto.Count) -ForegroundColor Green
 
     Write-Host ""
     Write-Host "       Ricerca di errori di rete nei log:" -ForegroundColor White
