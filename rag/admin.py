@@ -42,6 +42,12 @@ from .tasks import accoda_indicizzazione
 admin.site.site_header = "Sistema RAG — amministrazione"
 admin.site.site_title = "Sistema RAG"
 admin.site.index_title = "Configurazione e base di conoscenza"
+# «Visualizza sito» punta alla radice, che a lungo non e' stata instradata: il
+# collegamento portava a un 404 e stava percio' a None, che lo fa sparire.
+# Ora la radice c'e' e smista per ruolo, ma qui si punta dritti a /chiedi/:
+# per chi amministra «vedere il sito» significa vedere cio' che vede l'utente,
+# non essere rimandati all'admin da cui si e' appena usciti.
+admin.site.site_url = "/chiedi/"
 
 TRACCIAMENTO = (
     "Tracciamento",

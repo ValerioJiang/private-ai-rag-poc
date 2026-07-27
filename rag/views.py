@@ -323,8 +323,8 @@ class SoloLaRispostaRichiedeSessione(BasePermission):
 
     Il POST resta autenticato come prima, ed e' l'unico verbo che raggiunge
     rispondi(). /chiedi/ ha una sua login_required, quindi chi non ha sessione
-    finisce sul login dell'admin invece che su un errore: e' la via d'uscita
-    che il 401 non offriva.
+    finisce su /accedi/ invece che su un errore: e' la via d'uscita che il 401
+    non offriva.
     """
 
     def has_permission(self, request, view) -> bool:
@@ -491,10 +491,12 @@ def chiedi(request):
 
     login_required e non IsAuthenticated di DRF: qui si serve HTML, e a chi non
     ha una sessione va mostrato un login, non un 401 in JSON. Il rimando e'
-    LOGIN_URL, che i settings puntano al login dell'admin — l'unico che il
-    progetto abbia. Restare autenticati serve comunque: la fetch verso
-    /api/ask/ passa da SessionAuthentication, e senza sessione il browser
-    riceverebbe 403 dopo aver visto la pagina.
+    LOGIN_URL, che i settings puntano ad Accesso — la porta d'ingresso comune.
+    Puntava al login dell'admin, che pero' rifiuta chi non ha is_staff: proprio
+    l'utente per cui questa pagina esiste non poteva raggiungerla. Restare
+    autenticati serve comunque: la fetch verso /api/ask/ passa da
+    SessionAuthentication, e senza sessione il browser riceverebbe 403 dopo
+    aver visto la pagina.
 
     Nessun parametro di comportamento raggiunge il template (RF-22): le
     pipeline le chiede il browser a GET /api/pipelines/, coi loro valori, e a

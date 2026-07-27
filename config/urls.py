@@ -3,16 +3,11 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
-# L'intestazione dell'admin mostra «Visualizza sito» con un collegamento alla
-# radice. Finche' la radice non era instradata quel collegamento portava a un
-# 404, e stava percio' a `None` — che lo fa sparire del tutto. Ora la radice
-# c'e' e smista per ruolo, ma il collegamento punta direttamente a /chiedi/:
-# per chi amministra «vedere il sito» significa vedere cio' che vede l'utente,
-# non essere rimandato all'admin da cui e' appena uscito.
-admin.site.site_url = "/chiedi/"
-admin.site.site_header = "Interrogazione documentale — gestione"
-admin.site.site_title = "Gestione"
-admin.site.index_title = "Configurazione e documenti"
+# La personalizzazione di admin.site — intestazioni e «Visualizza sito» — sta
+# TUTTA in rag/admin.py. Stava anche qui, e le due assegnazioni si
+# sovrascrivevano a vicenda: vinceva questa, perche' l'URLconf viene caricato
+# dopo gli app config, e chi leggesse solo rag/admin.py vedrebbe valori che non
+# sono quelli resi.
 
 urlpatterns = [
     path("admin/", admin.site.urls),
