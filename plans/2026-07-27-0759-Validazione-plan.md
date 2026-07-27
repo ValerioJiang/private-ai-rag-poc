@@ -1142,7 +1142,7 @@ Cfr. §3.10: la soglia dei 2,5 MB è di Django, non una scelta di questo piano.
 
 ### Phase 4: Il rapporto di pagine con testo
 
-**Status:** NOT_STARTED
+**Status:** DONE
 
 **Read first:**
 - `rag/services/loaders.py` — `load_pdf()` e `PdfEstratto`: `page_count` è il
@@ -1158,7 +1158,7 @@ Cfr. §3.10: la soglia dei 2,5 MB è di Django, non una scelta di questo piano.
 
 **Changes:**
 
-- [ ] **4.1** In `rag/services/loaders.py`, cambiare la firma di `load_pdf()`:
+- [x] **4.1** In `rag/services/loaders.py`, cambiare la firma di `load_pdf()`:
 
   ```python
   def load_pdf(
@@ -1173,7 +1173,7 @@ Cfr. §3.10: la soglia dei 2,5 MB è di Django, non una scelta di questo piano.
   «controllo disattivato», e il valore vero arriva sempre dal chiamante, che lo
   legge dalla base di conoscenza. Annotarlo nella docstring.
 
-- [ ] **4.2** In `load_pdf()`, sostituire il blocco finale:
+- [x] **4.2** In `load_pdf()`, sostituire il blocco finale:
 
   ```python
       if not pagine:
@@ -1208,7 +1208,7 @@ Cfr. §3.10: la soglia dei 2,5 MB è di Django, non una scelta di questo piano.
 
   e la sezione `Solleva:` della docstring di `load_pdf()`.
 
-- [ ] **4.3** In `rag/services/ingestion.py`, passare il valore alla chiamata di
+- [x] **4.3** In `rag/services/ingestion.py`, passare il valore alla chiamata di
   `load_pdf()` (adattare al nome della variabile del documento):
 
   ```python
@@ -1220,7 +1220,7 @@ Cfr. §3.10: la soglia dei 2,5 MB è di Django, non una scelta di questo piano.
       )
   ```
 
-- [ ] **4.4** Aggiungere a `rag/tests/test_ingestione.py`:
+- [x] **4.4** Aggiungere a `rag/tests/test_ingestione.py`:
 
   ```python
   @pytest.fixture
@@ -1295,11 +1295,12 @@ Cfr. §3.10: la soglia dei 2,5 MB è di Django, non una scelta di questo piano.
 ```
 
 **Phase Complete When:**
-- [ ] `pytest -q` → **44 passed**
-- [ ] Il test della controprova (quota a zero → `indexed`, `page_count == 4`)
+- [x] `pytest -q` → **44 passed** — *in realtà **45**, per il test di
+      regressione aggiunto alla fase 3: cfr. lo scostamento nel report*
+- [x] Il test della controprova (quota a zero → `indexed`, `page_count == 4`)
       è verde: dimostra che il default non cambia nulla
-- [ ] `error_message` sul documento contiene il conteggio «1 pagine su 4»
-- [ ] `load_pdf()` ha **un solo chiamante** (`ingestion.py`, verificato in
+- [x] `error_message` sul documento contiene il conteggio «1 pagine su 4»
+- [x] `load_pdf()` ha **un solo chiamante** (`ingestion.py`, verificato in
       pianificazione con grep su tutto `rag/`): se ne comparissero altri,
       aggiornarli prima di chiudere la fase
 

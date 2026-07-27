@@ -242,3 +242,83 @@ sessione e superutente. A livello di form è coperta da
 - **Errori:** nessuno oltre all'incidente git descritto sopra.
 
 ---
+
+## Phase 4: Il rapporto di pagine con testo (T-44)
+
+- **Stato:** PASS
+- **Tentativi di correzione:** 0
+- **File modificati:** `rag/services/loaders.py`, `rag/services/ingestion.py`,
+  `rag/tests/test_ingestione.py`
+
+**Sintesi.** `load_pdf()` accetta ora `min_text_page_ratio`, che `ingestion.py`
+legge dalla base di conoscenza e non da una costante (RF-22); sotto quota
+solleva `PdfTestoInsufficiente` e il documento resta `failed` col conteggio nel
+motivo. **`PdfSenzaTesto` conserva la precedenza** — «nessuna pagina» è una
+diagnosi più precisa di «poche pagine» e ha un requisito suo (RF-10) — e
+`page_count` resta il totale del **file**, quindi CA-2 non regredisce.
+
+**Verifiche, rieseguite in proprio:**
+
+```
+> python -m pytest -q
+45 passed
+```
+
+Ripartizione: `test_api_ask.py` 9, `test_ingestione.py` 11,
+`test_segmentazione_e_factory.py` 11, `test_validazione.py` 14.
+
+- **Scostamenti:** il piano fissava **44 passed**; sono **45**, per il test di
+  regressione aggiunto alla fase 3 (scostamento 2 di quella fase). L'aritmetica
+  scala di uno, non c'è altra differenza.
+
+**Un avvertimento su come è stata chiusa questa fase.** Il sub-agente è stato
+**interrotto dall'operatore** mentre trascriveva il messaggio d'errore per la
+propria relazione: il codice era già scritto e la suite già verde, ma la
+relazione di fase non esiste. Quanto sopra è ricostruito **dall'albero e dai
+test**, non dal racconto di chi ha eseguito — ed è il motivo per cui il
+messaggio d'errore non è riportato qui per esteso, come il piano chiedeva. È
+una lacuna, non un dettaglio omesso.
+
+---
+
+## Phase 5: Verifica end-to-end — **NON ESEGUITA**
+
+- **Stato:** NON ESEGUITA
+
+Richiede Ollama vero, i due processi avviati a mano, un browser sull'admin e
+attese di minuti; il piano la assegna espressamente all'operatore e vieta di
+delegarla. Restano quindi **senza esito misurato**:
+
+- i sei controlli (a)–(f) — dimensione, pagine, limiti a zero, scansione
+  parziale, rifiuto dall'admin, risalvataggio che non rivaluta;
+- la controprova 5.3 con `scripts/dimostrazione.ps1`, che dovrebbe confermare
+  che a limiti zero tempi ed esiti non differiscono dal README.
+
+**Nessun documento deve riportare misure end-to-end per i limiti nuovi.** È il
+vincolo dato a tutti i sub-agenti della documentazione, ed è la ragione per cui
+il README dichiara la verifica «da fare» invece di riempirla.
+
+---
+
+## Phase 6: Documentazione — svolta in parte, commit fuori convenzione
+
+- **Stato:** PARZIALE
+
+Sei documenti del manifest riallineati (`README.md`, `ARCHITECTURE.md`,
+`ARCHITETTURA-IN-BREVE.md`, `REQUIREMENTS.md`, `PLAN.md`, `BACKLOG.md`), con il
+vincolo di non inventare misure. `BACKLOG.md` registra P7 come **incompleta**.
+
+**Due fatti da non addolcire:**
+
+1. **I commit non seguono la convenzione del progetto.** `b9c3625 feat: add
+   admission limits for PDF uploads in KnowledgeBase` è in inglese col prefisso
+   `feat:`; `2a77bf0 Implementa un'interfaccia utente...` è in italiano ma senza
+   prefisso di fase né id, e mescola in un solo commit interfaccia, tema e rotte
+   d'accesso. Il piano chiedeva `P7: ... (T-44, T-45)`.
+2. **Il lavoro su interfaccia e accesso non era nel piano.** Rotte `/`,
+   `/accedi/`, `/esci/`, il rimando di `GET /api/ask/`, il tema condiviso e la
+   tavolozza dell'admin sono nati da richieste arrivate durante l'esecuzione.
+   `BACKLOG.md` li tiene in una voce separata (T-49) proprio per non far
+   sembrare pianificato ciò che non lo è stato.
+
+---
