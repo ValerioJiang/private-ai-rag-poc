@@ -229,6 +229,12 @@ def _esegui_ingestione(document: Document, inizio: float) -> EsitoIngestione:
             "knowledge_base_id": kb.pk,
             "documento": document.original_filename or Path(document.file.name).name,
         },
+        # Dal database, mai una costante: RF-22. Zero — il default della
+        # colonna — disattiva il controllo, e il comportamento resta quello
+        # consegnato da P2 a P6. E' l'unico dei tre limiti di T-44 che si
+        # verifica QUI e non all'ingresso: richiede l'estrazione del testo,
+        # quindi lo scopre il worker (cfr. PdfTestoInsufficiente).
+        min_text_page_ratio=kb.min_text_page_ratio,
     )
     pezzi = splitter.split_documents(estratto.pagine)
     if not pezzi:

@@ -34,7 +34,9 @@ from .models import (
     RetrievalProfile,
     RetrievedChunk,
 )
+from .services.exceptions import IngestionError
 from .services.ingestion import compute_checksum, trova_duplicato
+from .services.validation import verifica_ammissibilita
 from .tasks import accoda_indicizzazione
 
 admin.site.site_header = "Sistema RAG — amministrazione"
@@ -256,6 +258,18 @@ class KnowledgeBaseAdmin(admin.ModelAdmin):
                 ),
             },
         ),
+        (
+            "Limiti di ammissione",
+            {
+                "fields": ("max_file_size_mb", "max_page_count", "min_text_page_ratio"),
+                "description": (
+                    "Valgono ai NUOVI caricamenti. I documenti gia' indicizzati "
+                    "restano tali anche se non passerebbero i limiti attuali, e "
+                    "la reindicizzazione non li rivaluta. Zero disattiva il "
+                    "singolo controllo."
+                ),
+            },
+        ),
         TRACCIAMENTO,
     )
 
@@ -321,7 +335,7 @@ class DocumentChunkInline(admin.TabularInline):
 
 
 class DocumentAdminForm(forms.ModelForm):
-    """Deduplica al momento del caricamento (RF-09).
+    """Deduplica e limiti di ammissione al momento del caricamento (RF-09, T-44).
 
     Perche' serve un form invece del solo vincolo di database: il ModelForm
     dell'admin esclude dalla validazione i campi in readonly_fields, e
@@ -332,6 +346,12 @@ class DocumentAdminForm(forms.ModelForm):
     Il controllo qui evita anche di CREARE la riga: l'alternativa —
     intercettare in ingest_document e marcare «Fallito» — lascerebbe in elenco
     un documento inutile per ogni tentativo.
+
+    Da T-44 il clean() applica anche i limiti di ammissione della base
+    (dimensione e pagine), con la stessa verifica_ammissibilita() della POST e
+    di `manage.py ingest`: e' il terzo dei tre inneschi che accettano un file
+    NUOVO, e senza di esso il flusso piu' battuto — quello di CA-2 — li
+    scavalcherebbe tutti.
     """
 
     class Meta:
@@ -372,6 +392,27 @@ class DocumentAdminForm(forms.ModelForm):
                     )
                 }
             )
+
+        # I limiti di ammissione anche da qui (T-44). L'admin NON e' un
+        # innesco «su file gia' accettato»: caricare un documento nuovo
+        # dall'admin carica un file NUOVO, ed e' il flusso di CA-2. Senza
+        # questo blocco un PDF enorme scavalcherebbe ogni limite proprio
+        # dalla via che un amministratore usa per prima.
+        #
+        # Sta DOPO la deduplica, come nella vista, e sotto la guardia
+        # isinstance(file, UploadedFile) gia' presente qualche riga sopra: e'
+        # quella a garantire che risalvare un documento senza toccarne il file
+        # non lo rivaluti — un limite abbassato non invalida l'archivio.
+        #
+        # Il file viene ora letto DUE volte, checksum e conteggio delle
+        # pagine: entrambe le letture riavvolgono il puntatore, altrimenti il
+        # salvataggio scriverebbe zero byte. E' il difetto accertato in P2, e
+        # un test lo verifica sul file salvato.
+        try:
+            verifica_ammissibilita(file, kb)
+        except IngestionError as exc:
+            raise forms.ValidationError({"file": str(exc)}) from exc
+
         return dati
 
 

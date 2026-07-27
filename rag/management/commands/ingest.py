@@ -14,6 +14,7 @@ from django.core.management.base import BaseCommand, CommandError
 from rag.models import Document, KnowledgeBase, RagPipeline
 from rag.services.exceptions import IngestionError
 from rag.services.ingestion import compute_checksum, ingest_document, trova_duplicato
+from rag.services.validation import verifica_ammissibilita
 
 
 class Command(BaseCommand):
@@ -125,6 +126,26 @@ class Command(BaseCommand):
                 f"documento {esistente.pk}. Per rifarne l'indice: "
                 f"manage.py ingest --reindex {esistente.pk}"
             )
+
+        # Gli stessi limiti della POST, dallo stesso punto (T-44): un limite
+        # che valesse solo via HTTP sarebbe un limite che non vale. Sta DOPO
+        # la deduplica come nella vista, e PRIMA della copia in MEDIA_ROOT:
+        # rifiutare dopo lascerebbe un file orfano, e la riga non nasce affatto.
+        #
+        # La traduzione IngestionError -> CommandError e' quella che handle()
+        # usa gia' per ingest_document(); quel try avvolge pero' la sola
+        # indicizzazione, non la creazione del documento, e va quindi ripetuto
+        # qui. E' la stessa strada, non una seconda.
+        #
+        # Il percorso si passa esplicitamente: File() che incarta un file
+        # aperto non espone ne' `.path` ne' `.temporary_file_path()` (misurato),
+        # e senza dirglielo la validazione leggerebbe in memoria per intero
+        # proprio il file che il limite esiste per respingere.
+        try:
+            with percorso.open("rb") as f:
+                verifica_ammissibilita(File(f), kb, percorso=str(percorso))
+        except IngestionError as exc:
+            raise CommandError(str(exc)) from exc
 
         documento = Document(knowledge_base=kb, original_filename=percorso.name)
         with percorso.open("rb") as f:

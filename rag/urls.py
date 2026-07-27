@@ -10,4 +10,6 @@ urlpatterns = [
     path("api/documents/<int:pk>/", views.documento, name="api-document"),
     path("api/ask/", views.ask, name="api-ask"),
     path("api/pipelines/", views.pipelines, name="api-pipelines"),
+    # L'unica rotta che serve HTML: interroga l'endpoint qui sopra dal browser.
+    path("chiedi/", views.chiedi, name="chiedi"),
 ]

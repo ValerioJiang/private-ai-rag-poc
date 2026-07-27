@@ -11,7 +11,9 @@ import logging
 
 import httpx
 from django.conf import settings
+from django.contrib.auth.decorators import login_required
 from django.db import connection
+from django.shortcuts import render
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound, ValidationError
@@ -25,9 +27,10 @@ from .serializers import (
     DocumentUploadSerializer,
     RagPipelineSerializer,
 )
-from .services.exceptions import LlmNonRaggiungibile, QueryError
+from .services.exceptions import IngestionError, LlmNonRaggiungibile, QueryError
 from .services.ingestion import compute_checksum, trova_duplicato
 from .services.query import rispondi
+from .services.validation import verifica_ammissibilita
 from .tasks import accoda_indicizzazione
 
 logger = logging.getLogger(__name__)
@@ -163,7 +166,9 @@ def documenti(request):
     - 202 file accettato, documento creato in stato «in attesa», task
       accodato. Per sapere com'e' finita si interroga
       GET /api/documents/{id}/ finche' lo stato non e' «indexed» o «failed»;
-    - 400 file mancante, non PDF, o base di conoscenza inesistente;
+    - 400 file mancante, non PDF, base di conoscenza inesistente, oppure
+      oltre i limiti di ammissione della base (T-44: dimensione, pagine).
+      Nessuna riga viene creata e nessun file scritto;
     - 409 stesso contenuto gia' presente nella base (RF-09). La riga NON viene
       creata e il file NON viene scritto: la deduplica precede la scrittura,
       altrimenti ogni duplicato rifiutato lascerebbe un file orfano.
@@ -178,6 +183,12 @@ def documenti(request):
     dirama qui perche' una rotta Django corrisponde a una sola vista, e
     dividere in due funzioni imporrebbe due percorsi diversi per la stessa
     risorsa.
+
+    IL 422 NON TORNA. Con max_page_count configurato la POST apre il PDF e
+    puo' quindi scoprire un file corrotto, che senza quel limite resta di
+    competenza del worker: la risposta e' comunque 400 e non 422, perche' la
+    condizione e' nota PRIMA di ogni scrittura. Il cambio di contratto e'
+    dichiarato nel README insieme al limite.
     """
     if request.method == "GET":
         return _elenco(request)
@@ -205,6 +216,18 @@ def documenti(request):
             },
             status=status.HTTP_409_CONFLICT,
         )
+
+    # I limiti di ammissione (T-44), DOPO la deduplica: il 409 e la sua
+    # garanzia — niente riga, niente file — sono gia' documentati e provati,
+    # e anteporre questo controllo cambierebbe la risposta a un duplicato che
+    # eccede anche un limite. Un duplicato e' anche la risposta piu' utile:
+    # «ce l'hai gia'» batte «e' troppo grande».
+    try:
+        verifica_ammissibilita(file, kb)
+    except IngestionError as exc:
+        # 400 e non 422: e' una condizione della richiesta, scoperta prima di
+        # qualunque scrittura. Nessuna riga «Fallito» resta in elenco.
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     documento = Document(
         knowledge_base=kb, file=file, original_filename=file.name
@@ -355,3 +378,36 @@ def pipelines(request):
         "knowledge_base", "llm_profile", "retrieval_profile", "prompt_template"
     ).order_by("-is_default", "name")
     return Response(RagPipelineSerializer(qs, many=True).data)
+
+
+@login_required
+def chiedi(request):
+    """GET /chiedi/ — la pagina che interroga POST /api/ask/.
+
+    E' l'unica vista del progetto che restituisce HTML e la sola che non sia un
+    involucro attorno a un servizio: non chiama rispondi(), non tocca il
+    dominio, non scrive un QueryLog. Rende un template e basta; a interrogare
+    e' il browser, con una fetch verso l'endpoint gia' esistente. Il confine
+    dichiarato nell'intestazione del modulo resta quindi dove sta.
+
+    Perche' esiste, dato che T-33 — il «playground» nell'admin — e' stata
+    tagliata in P5. Il taglio aveva una conseguenza scritta: senza, non c'e'
+    modo di provare una pipeline dall'interfaccia. L'API navigabile di DRF su
+    una vista funzionale non offre un form a campi, ma una casella in cui il
+    corpo va scritto a mano come JSON, sotto un'intestazione «Method Not
+    Allowed» che sul GET e' corretta e si legge come un guasto. Questa pagina
+    copre quel vuoto senza rientrare nel perimetro tagliato: sta fuori
+    dall'admin, non aggiunge endpoint e non duplica alcuna regola.
+
+    login_required e non IsAuthenticated di DRF: qui si serve HTML, e a chi non
+    ha una sessione va mostrato un login, non un 401 in JSON. Il rimando e'
+    LOGIN_URL, che i settings puntano al login dell'admin — l'unico che il
+    progetto abbia. Restare autenticati serve comunque: la fetch verso
+    /api/ask/ passa da SessionAuthentication, e senza sessione il browser
+    riceverebbe 403 dopo aver visto la pagina.
+
+    Nessun parametro di comportamento raggiunge il template (RF-22): le
+    pipeline le chiede il browser a GET /api/pipelines/, coi loro valori, e a
+    decidere resta il server.
+    """
+    return render(request, "rag/chiedi.html")

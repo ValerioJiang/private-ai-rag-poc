@@ -1,0 +1,306 @@
+{% comment %}
+Interfaccia minima per POST /api/ask/ (RF-11 -> RF-16, RF-27).
+
+Perche' esiste. L'API navigabile di DRF su una vista funzionale non offre un
+form a campi: mostra una casella di testo in cui la domanda va scritta come
+JSON, sotto un'intestazione «Method Not Allowed» che sul GET e' corretta ma si
+legge come un guasto. Chi non conosce il progetto non capisce che cosa deve
+scrivere. Questa pagina copre lo stesso endpoint - non ne aggiunge di nuovi e
+non duplica alcuna regola - con i due campi che il serializer accetta.
+
+Il vincolo che ne ha deciso la forma e' RNF-01: nulla esce dalla macchina.
+Niente CDN, niente font remoti, nessuna libreria: CSS e JavaScript sono qui
+dentro. Una sola <script src> verso un dominio esterno renderebbe falsa la
+prova a interfacce disattivate di T-43.
+
+Il cronometro accanto allo spinner non e' decorazione. La prima domanda dopo
+l'avvio del server costa ~180 s, di cui ~178 di sola generazione - il modello
+che entra in VRAM, misurato in T-41 - e senza un tempo che scorre una pagina
+ferma per tre minuti si legge come bloccata. Dopo 15 secondi compare anche la
+ragione, perche' uno spinner che gira senza spiegarsi informa quanto uno fermo.
+
+Nessun parametro di comportamento e' scritto qui (RF-22): le pipeline arrivano
+da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
+{% endcomment %}<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interroga la base di conoscenza</title>
+<style>
+  :root {
+    --bordo: #d8d8d8;
+    --sfondo: #f6f6f4;
+    --carta: #ffffff;
+    --testo: #1c1c1a;
+    --tenue: #6a6a66;
+    --accento: #2f5d50;
+    --errore: #8a2a20;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2rem 1rem 4rem;
+    background: var(--sfondo);
+    color: var(--testo);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .contenitore { max-width: 52rem; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  .sottotitolo { color: var(--tenue); font-size: .9rem; margin: 0 0 1.5rem; }
+  .collegamenti a { color: var(--accento); font-size: .85rem; margin-left: .9rem; }
+  form { background: var(--carta); border: 1px solid var(--bordo); border-radius: 10px; padding: 1.25rem; }
+  label { display: block; font-size: .82rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--tenue); margin-bottom: .35rem; }
+  textarea, select {
+    width: 100%; padding: .7rem .8rem; font: inherit; color: inherit;
+    background: #fff; border: 1px solid var(--bordo); border-radius: 6px;
+  }
+  textarea { min-height: 5.5rem; resize: vertical; }
+  textarea:focus, select:focus { outline: 2px solid var(--accento); outline-offset: 1px; }
+  .riga { margin-bottom: 1rem; }
+  .azioni { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: 600; padding: .6rem 1.4rem; cursor: pointer;
+    background: var(--accento); color: #fff; border: 0; border-radius: 6px;
+  }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .scorciatoia { color: var(--tenue); font-size: .8rem; }
+  /* Lo spinner e' un bordo che gira: nessuna immagine da caricare. */
+  .caricamento { display: none; align-items: center; gap: .7rem; margin-top: 1rem; }
+  .caricamento.attivo { display: flex; }
+  .rotella {
+    width: 1.1rem; height: 1.1rem; border: 2px solid #cfcfcf;
+    border-top-color: var(--accento); border-radius: 50%;
+    animation: gira .8s linear infinite; flex: none;
+  }
+  @keyframes gira { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .rotella { animation-duration: 2.4s; } }
+  .cronometro { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .avviso-freddo { color: var(--tenue); font-size: .85rem; }
+  .esito { margin-top: 1.75rem; }
+  .carta { background: var(--carta); border: 1px solid var(--bordo); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
+  .risposta { font-size: 1.05rem; white-space: pre-wrap; }
+  .etichette { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: 1rem; }
+  .etichetta { font-size: .78rem; padding: .2rem .6rem; border-radius: 999px; background: #ececea; color: var(--tenue); }
+  .etichetta.viva { background: #e2efe9; color: var(--accento); }
+  .etichetta.spenta { background: #f2e6df; color: #8a5a20; }
+  h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .04em; color: var(--tenue); margin: 1.75rem 0 .75rem; }
+  .fonte { border-left: 3px solid var(--accento); padding: .1rem 0 .1rem .9rem; margin-bottom: 1.1rem; }
+  .fonte-intestazione { font-size: .85rem; color: var(--tenue); margin-bottom: .3rem; }
+  .fonte-intestazione strong { color: var(--testo); }
+  .punteggio { float: right; font-variant-numeric: tabular-nums; }
+  .estratto { font-size: .92rem; color: #3c3c39; }
+  .errore { border-left: 3px solid var(--errore); background: #fbf3f2; }
+  .errore .titolo { font-weight: 600; color: var(--errore); margin-bottom: .3rem; }
+  .vuoto { color: var(--tenue); font-style: italic; }
+</style>
+</head>
+<body>
+<div class="contenitore">
+
+  <header>
+    <div>
+      <h1>Interroga la base di conoscenza</h1>
+      <p class="sottotitolo">La risposta cita i segmenti da cui è stata tratta: documento, pagina, estratto e punteggio.</p>
+    </div>
+    <div class="collegamenti">
+      <a href="/admin/">Admin</a>
+      <a href="/health">Stato</a>
+      <a href="/api/ask/">API</a>
+    </div>
+  </header>
+
+  <form id="modulo">
+    <div class="riga">
+      <label for="domanda">Domanda</label>
+      <textarea id="domanda" name="domanda" autofocus
+                placeholder="Quanti giorni di ferie si maturano?"></textarea>
+    </div>
+
+    <div class="riga">
+      <label for="pipeline">Configurazione</label>
+      <select id="pipeline" name="pipeline">
+        <option value="">Predefinita</option>
+      </select>
+    </div>
+
+    <div class="azioni">
+      <button type="submit" id="invia">Chiedi</button>
+      <span class="scorciatoia">Ctrl+Invio per inviare</span>
+    </div>
+
+    <div class="caricamento" id="caricamento">
+      <span class="rotella"></span>
+      <span class="cronometro" id="cronometro">0,0 s</span>
+      <span class="avviso-freddo" id="avviso"></span>
+    </div>
+  </form>
+
+  <div class="esito" id="esito"></div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Il token arriva dal template: la sessione dell'admin autentica anche
+  // queste richieste, ma SessionAuthentication di DRF impone il CSRF.
+  var CSRF = "{{ csrf_token }}";
+
+  var modulo = document.getElementById("modulo");
+  var campoDomanda = document.getElementById("domanda");
+  var campoPipeline = document.getElementById("pipeline");
+  var bottone = document.getElementById("invia");
+  var caricamento = document.getElementById("caricamento");
+  var cronometro = document.getElementById("cronometro");
+  var avviso = document.getElementById("avviso");
+  var esito = document.getElementById("esito");
+  var tempo = null;
+
+  function secondi(ms) {
+    return (ms / 1000).toFixed(1).replace(".", ",") + " s";
+  }
+
+  function fuga(testo) {
+    var d = document.createElement("div");
+    d.textContent = testo === null || testo === undefined ? "" : String(testo);
+    return d.innerHTML;
+  }
+
+  // --- le configurazioni disponibili, coi loro valori (RF-23) --------------
+  fetch("/api/pipelines/", {credentials: "same-origin"})
+    .then(function (r) { return r.ok ? r.json() : []; })
+    .then(function (elenco) {
+      elenco.forEach(function (p) {
+        if (!p.is_active) { return; }
+        var o = document.createElement("option");
+        o.value = p.name;
+        o.textContent = p.name + " — " + p.model_name +
+                        ", temperatura " + p.temperature +
+                        ", " + p.search_type + ", top_k " + p.top_k +
+                        (p.is_default ? " (predefinita)" : "");
+        campoPipeline.appendChild(o);
+      });
+    })
+    .catch(function () { /* il selettore resta sulla predefinita: non e' un guasto */ });
+
+  // --- cronometro e spinner ------------------------------------------------
+  function avvia() {
+    var inizio = Date.now();
+    caricamento.classList.add("attivo");
+    bottone.disabled = true;
+    avviso.textContent = "";
+    tempo = setInterval(function () {
+      var trascorso = Date.now() - inizio;
+      cronometro.textContent = secondi(trascorso);
+      // Dopo 15 s l'attesa non e' piu' ordinaria e va spiegata, o la pagina
+      // sembra bloccata: e' il caricamento del modello, una volta per processo.
+      if (trascorso > 15000 && !avviso.textContent) {
+        avviso.textContent = "prima domanda dopo l'avvio: il modello viene caricato in memoria, può volerci qualche minuto";
+      }
+    }, 100);
+  }
+
+  function ferma() {
+    clearInterval(tempo);
+    caricamento.classList.remove("attivo");
+    bottone.disabled = false;
+    cronometro.textContent = "0,0 s";
+  }
+
+  // --- resa dell'esito -----------------------------------------------------
+  function mostraErrore(codice, dettaglio) {
+    esito.innerHTML =
+      '<div class="carta errore">' +
+        '<div class="titolo">HTTP ' + fuga(codice) + "</div>" +
+        "<div>" + fuga(dettaglio) + "</div>" +
+      "</div>";
+  }
+
+  function mostra(dati) {
+    var html =
+      '<div class="carta">' +
+        '<div class="risposta">' + fuga(dati.risposta) + "</div>" +
+        '<div class="etichette">' +
+          '<span class="etichetta ' + (dati.generata ? "viva" : "spenta") + '">' +
+            (dati.generata ? "generata dall'LLM" : "nessuna generazione") +
+          "</span>" +
+          '<span class="etichetta">' + fuga(dati.pipeline) + "</span>" +
+          '<span class="etichetta">recupero ' + fuga(dati.retrieval_ms) + " ms</span>" +
+          '<span class="etichetta">generazione ' + fuga(dati.generation_ms) + " ms</span>" +
+          '<span class="etichetta">totale ' + fuga(dati.latency_ms) + " ms</span>" +
+        "</div>" +
+      "</div>";
+
+    var fonti = dati.fonti || [];
+    html += "<h2>Fonti (" + fonti.length + ")</h2>";
+    if (!fonti.length) {
+      html += '<p class="vuoto">Nessun segmento recuperato: la risposta non è stata generata.</p>';
+    } else {
+      html += '<div class="carta">';
+      fonti.forEach(function (f) {
+        html +=
+          '<div class="fonte">' +
+            '<div class="fonte-intestazione">' +
+              '<span class="punteggio">' + fuga(f.punteggio) + "</span>" +
+              "<strong>" + fuga(f.documento) + "</strong> · p. " + fuga(f.pagina) +
+              " · segmento " + fuga(f.ordinale) +
+            "</div>" +
+            '<div class="estratto">' + fuga(f.estratto) + "</div>" +
+          "</div>";
+      });
+      html += "</div>";
+    }
+    esito.innerHTML = html;
+  }
+
+  // --- invio ---------------------------------------------------------------
+  modulo.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    esito.innerHTML = "";
+    avvia();
+
+    fetch("/api/ask/", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json", "X-CSRFToken": CSRF},
+      body: JSON.stringify({
+        domanda: campoDomanda.value,
+        pipeline: campoPipeline.value
+      })
+    })
+      .then(function (r) {
+        return r.json()
+          .then(function (corpo) { return {ok: r.ok, codice: r.status, corpo: corpo}; })
+          .catch(function () { return {ok: false, codice: r.status, corpo: {}}; });
+      })
+      .then(function (esitoHttp) {
+        ferma();
+        if (esitoHttp.ok) {
+          mostra(esitoHttp.corpo);
+        } else {
+          // L'API risponde JSON su ogni condizione, compresi i guasti
+          // inattesi (rag/errors.py): `detail` c'e' quasi sempre, e quando
+          // manca sono gli errori di campo del serializer.
+          var c = esitoHttp.corpo || {};
+          mostraErrore(esitoHttp.codice, c.detail || JSON.stringify(c));
+        }
+      })
+      .catch(function (err) {
+        ferma();
+        mostraErrore("—", "Richiesta non riuscita: " + err.message +
+                          ". Il server è ancora in esecuzione?");
+      });
+  });
+
+  campoDomanda.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+      modulo.requestSubmit();
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -102,6 +102,12 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# Dove login_required manda chi non ha una sessione. Il valore predefinito di
+# Django è "/accounts/login/", che qui non è instradato: la pagina /chiedi/
+# rimanderebbe a un 404 invece che a un login. Il nome della rotta, non il
+# percorso: l'unico login del progetto è quello dell'admin.
+LOGIN_URL = "admin:login"
+
 # ATTENZIONE — questa cache NON è quella degli oggetti LangChain, e il commento
 # che stava qui diceva il contrario.
 #

@@ -558,7 +558,7 @@ invia tutti i testi in una sola richiesta (§7.9).
 |---|---|---|
 | **Recursive character** ✅ (default) | Rispetta i confini di paragrafo e frase; nessuna dipendenza extra | Ignora la struttura del documento (tabelle, colonne) |
 | Token-based | Allineato alla finestra di contesto, dimensioni prevedibili | Richiede un tokenizer coerente col modello |
-| Semantic chunking | Chunk coerenti per significato, retrieval migliore | Costo di embedding all'ingestione molto più alto |
+| Semantic chunking | Chunk coerenti per significato; il guadagno di retrieval è atteso ma **non confermato in generale** (evidenza sotto) | Costo di embedding all'ingestione molto più alto |
 | Layout-aware (`unstructured`) | Gestisce tabelle e layout multicolonna | Dipendenze pesanti (OCR, poppler), ingestione lenta |
 
 Recursive e token-based sono entrambi esposti come valori dell'enum
@@ -569,6 +569,47 @@ quello i chunk di `qwen2.5` e `bge-m3` significherebbe misurarli col metro di
 un altro modello, producendo un conteggio plausibile e falso. Il valore resta
 nell'enum come alternativa documentata, e il rifiuto è esplicito invece che
 silenzioso.
+
+**Il semantic chunking, invece, non è nell'enum affatto**: è stato valutato e
+lasciato fuori. Fino a qui la ragione era di proporzione — il costo di embedding
+all'ingestione contro un guadagno atteso — cioè un argomento, non una misura.
+Esiste però letteratura che mette alla prova proprio quel guadagno, e va citata
+anche nella parte in cui non conferma la scelta.
+
+**Evidenza pubblicata (riferimenti verificati il 27/07/2026).**
+
+| Fonte | Cosa misura | Esito |
+|---|---|---|
+| **Qu, Tu, Bao**, *Is Semantic Chunking Worth the Computational Cost?*, Findings of the ACL: NAACL 2025, pp. 2155–2177 ([aclanthology.org/2025.findings-naacl.114](https://aclanthology.org/2025.findings-naacl.114/), arXiv [2410.13070](https://arxiv.org/abs/2410.13070)) | Valutazione sistematica del semantic chunking contro fixed-size su **tre** compiti: document retrieval, evidence retrieval, generazione della risposta | I costi computazionali **non sono giustificati da guadagni consistenti**. Gli autori riconoscono benefici in scenari specifici, ma incostanti: il paper dice «non in generale», non «mai» |
+| Benchmark **Vecta / FloTorch**, febbraio 2026 — 7 strategie su 50 articoli accademici | Accuratezza end-to-end, non il solo recupero | Splitting **ricorsivo a 512 token primo, ~69%**; semantic ~54%, con frammenti da ~43 token di media. La spiegazione riportata è che i frammenti minuscoli *recuperano* bene ma danno all'LLM troppo poco contesto per rispondere |
+| **Contro-evidenza:** *Comparative Evaluation of Advanced Chunking for RAG… for Clinical Decision Support*, MDPI *Bioengineering* 12(11), 01/11/2025, DOI [10.3390/bioengineering12111194](https://doi.org/10.3390/bioengineering12111194) | Quattro pipeline identiche salvo la segmentazione, su 30 domande post-operatorie | Il chunking **adattivo** arriva all'87% di accuratezza contro il **50% del baseline fixed-size** (p = 0,001), con rilevanza clinica al 93% |
+
+**Cosa questa evidenza sostiene, e cosa no.** Le prime due righe sostengono la
+decisione presa: su prosa documentale il ricorsivo regge da baseline, e il
+semantic non ripaga il costo che chiede. La terza **non la contraddice**, e la
+distinzione è precisa: il confronto lì è contro il **fixed-size**, cioè contro il
+taglio a lunghezza fissa che ignora i confini del testo — che non è la strategia
+di questo progetto. `RecursiveCharacterTextSplitter` rispetta paragrafi e frasi
+*prima* di tagliare a misura: è già, in piccolo, segmentazione consapevole dei
+confini. Quello studio dice che allinearsi alla struttura del documento paga; il
+ricorsivo lo fa in modo economico, l'adattivo in modo costoso.
+
+La conclusione difendibile è quindi **«dipende dal dominio, e per prosa
+documentale il ricorsivo è la scelta giusta»** — non «il semantic chunking non
+serve». Su referti clinici, verbali strutturati o documenti a sezioni brevi la
+risposta potrebbe rovesciarsi, e il modo di scoprirlo esiste già: `chunk_size`,
+`chunk_overlap` e `separators` sono configurabili dall'admin, quindi il confronto
+si fa senza toccare il codice. Introdurre una terza strategia resterebbe un
+lavoro di realizzazione, non di riprogettazione: `get_splitter()` è un solo punto.
+
+**Due riserve sulle fonti, dichiarate.** Il paper NAACL è stato verificato su ACL
+Anthology (autori, sede, pagine, DOI). Del benchmark Vecta/FloTorch **non è stata
+raggiunta una fonte primaria**: i numeri circolano su rassegne secondarie, che
+riportano il ricorsivo al 69% ma il semantic ora al 54% ora al 58% — l'ordine di
+grandezza e il verso del risultato sono concordi, la cifra esatta no, e va letta
+così. Lo studio MDPI è verificato su DOI, ma il suo corpus sono **istruzioni
+post-operatorie di rinoplastica**, non referti: è un dominio clinico, non la
+prova generale sui referti.
 
 ### 7.5 Elaborazione asincrona
 

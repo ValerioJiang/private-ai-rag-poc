@@ -46,6 +46,36 @@ class PdfSenzaTesto(IngestionError):
     """Nessun testo estraibile: probabile scansione senza OCR (RF-10)."""
 
 
+class FileTroppoGrande(IngestionError):
+    """Il file eccede KnowledgeBase.max_file_size_mb (T-44).
+
+    Condizione SINCRONA: la scopre chi carica, non il worker. La coda e'
+    seriale, e un file molto grande non fallisce — occupa il worker e ritarda
+    ogni altro documento.
+    """
+
+
+class TroppePagine(IngestionError):
+    """Il PDF eccede KnowledgeBase.max_page_count (T-44).
+
+    Sincrona come FileTroppoGrande. Il conteggio richiede di aprire il file,
+    quindi si esegue SOLO se il limite e' configurato: cfr. la docstring di
+    verifica_ammissibilita().
+    """
+
+
+class PdfTestoInsufficiente(IngestionError):
+    """Troppe pagine senza testo rispetto a min_text_page_ratio (T-44).
+
+    NON e' PdfSenzaTesto, che copre il caso in cui NESSUNA pagina abbia testo
+    (RF-10). Questa copre la scansione PARZIALE, che oggi passa in silenzio:
+    un PDF di 100 pagine di cui 10 con testo diventa «Indicizzato» con 10
+    segmenti, e nulla dice che il 90% non e' stato indicizzato.
+
+    Asincrona: richiede l'estrazione, quindi la scopre il worker.
+    """
+
+
 class DocumentoDuplicato(IngestionError):
     """Lo stesso file e' gia' presente in questa base di conoscenza (RF-09)."""
 

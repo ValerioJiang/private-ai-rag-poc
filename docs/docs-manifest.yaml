@@ -8,6 +8,9 @@ primary:
 # Documenti di analisi e pianificazione.
 docs:
   - ARCHITECTURE.md
+  # Panoramica in una pagina: e' una riduzione di ARCHITECTURE.md, quindi va
+  # riallineata insieme a quello e mai per conto proprio.
+  - ARCHITETTURA-IN-BREVE.md
   - REQUIREMENTS.md
   - PLAN.md
   - BACKLOG.md

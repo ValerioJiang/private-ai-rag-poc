@@ -332,6 +332,95 @@ def test_una_configurazione_irrealizzabile_ferma_prima_di_elaborazione(
 
 
 # ----------------------------------------------------------------------
+# La scansione PARZIALE: il buco che T-44 chiude
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def pdf_meta_scansionato() -> bytes:
+    """Quattro pagine, una sola con testo: rapporto 0,25.
+
+    E' il caso che prima di T-44 passava in silenzio — «Indicizzato» con un
+    solo segmento su quattro pagine, e nulla nell'admin a dirlo. Sta qui e non
+    in conftest.py perche' lo usano soltanto i due test che seguono: le
+    fixture di conftest.py sono quelle condivise fra piu' file.
+    """
+    import pymupdf
+
+    documento = pymupdf.open()
+    prima = documento.new_page()
+    prima.insert_text((72, 100), "L'unica pagina con del testo estraibile.")
+    for _ in range(3):
+        documento.new_page()
+    dati = documento.tobytes()
+    documento.close()
+    return dati
+
+
+@pytest.mark.django_db
+def test_una_scansione_parziale_sotto_la_quota_lascia_stato_fallito(
+    ingestione_senza_ollama, crea_documento, pdf_meta_scansionato
+):
+    """Il buco piu' insidioso dei tre limiti di T-44.
+
+    Gli altri due — dimensione e numero di pagine — si vedono all'ingresso e
+    danno un 400 immediato. Questo no: senza il controllo il documento diventa
+    «Indicizzato» e nulla dice che tre pagine su quattro sono rimaste fuori
+    dall'indice. Il conteggio nel motivo non e' un dettaglio di forma: e' cio'
+    che permette a un amministratore di decidere se il file va rifatto con
+    l'OCR o se la soglia e' troppo severa (RNF-04, CA-8).
+
+    La soglia arriva dalla base di conoscenza e non da una costante (RF-22):
+    il test la scrive sulla riga, come farebbe l'admin.
+    """
+    from rag.models import Document
+    from rag.services.exceptions import PdfTestoInsufficiente
+    from rag.services.ingestion import ingest_document
+
+    # ATTENZIONE all'ordine: la fixture e' _crea(contenuto, nome), col
+    # CONTENUTO per primo. Invertirli creerebbe un documento il cui file
+    # contiene il nome del file.
+    documento = crea_documento(pdf_meta_scansionato, "meta-scansionato.pdf")
+    kb = documento.knowledge_base
+    kb.min_text_page_ratio = 0.5
+    kb.save()
+
+    with pytest.raises(PdfTestoInsufficiente):
+        ingest_document(documento)
+
+    documento.refresh_from_db()
+    assert documento.status == Document.Status.FAILED
+    assert "1 pagine su 4" in documento.error_message
+
+
+@pytest.mark.django_db
+def test_con_la_quota_a_zero_la_scansione_parziale_viene_indicizzata(
+    ingestione_senza_ollama, crea_documento, pdf_meta_scansionato
+):
+    """Controprova: il default non cambia il comportamento consegnato.
+
+    Zero significa «controllo disattivato» (§3.9 del piano), e lo stesso file
+    che il test precedente rifiuta arriva qui a «Indicizzato». E' anche la
+    verifica che CA-2 non regredisca: page_count resta il totale del FILE.
+    """
+    from rag.models import Document
+    from rag.services.ingestion import ingest_document
+
+    # ATTENZIONE all'ordine: la fixture e' _crea(contenuto, nome), col
+    # CONTENUTO per primo. Invertirli creerebbe un documento il cui file
+    # contiene il nome del file.
+    documento = crea_documento(pdf_meta_scansionato, "meta-scansionato.pdf")
+    assert documento.knowledge_base.min_text_page_ratio == 0.0
+
+    ingest_document(documento)
+
+    documento.refresh_from_db()
+    assert documento.status == Document.Status.INDEXED
+    # page_count resta il totale del FILE, non delle pagine con testo (CA-2).
+    assert documento.page_count == 4
+
+
+# ----------------------------------------------------------------------
 # L'accodamento: un solo punto, e riporta a «In attesa» (T-32)
 # ----------------------------------------------------------------------
 

@@ -10,7 +10,12 @@ import hashlib
 import json
 
 from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator, RegexValidator
+from django.core.validators import (
+    FileExtensionValidator,
+    MaxValueValidator,
+    MinValueValidator,
+    RegexValidator,
+)
 from django.db import models
 from django.db.models import Q
 
@@ -56,6 +61,50 @@ class KnowledgeBase(TimestampedModel):
         on_delete=models.PROTECT,
         related_name="knowledge_bases",
         verbose_name="profilo di segmentazione",
+    )
+
+    # --- limiti di ammissione (T-44, RF-22) ---------------------------
+    # Stanno qui e non nel codice per la stessa ragione di excerpt_length:
+    # sono parametri di COMPORTAMENTO, e RF-22 non ne ammette fuori dal
+    # database. Stanno sulla base di conoscenza e non sul profilo di
+    # segmentazione perche' riguardano QUALI FILE si accettano, non come si
+    # divide il testo gia' estratto.
+    #
+    # Zero disattiva, ed e' il default: le righe esistenti — comprese quelle
+    # create dalla 0004 — mantengono il comportamento con cui P2 → P6 hanno
+    # misurato.
+    max_file_size_mb = models.PositiveIntegerField(
+        "dimensione massima (MB)",
+        default=0,
+        help_text=(
+            "Oltre questa dimensione il caricamento e' respinto subito, con "
+            "400 e senza creare ne' la riga ne' il file. Zero disattiva il "
+            "controllo. La coda e' seriale: un file molto grande non fallisce, "
+            "occupa il worker e ritarda tutti gli altri documenti."
+        ),
+    )
+    max_page_count = models.PositiveIntegerField(
+        "pagine massime",
+        default=0,
+        help_text=(
+            "Oltre questo numero di pagine il caricamento e' respinto subito. "
+            "Zero disattiva il controllo E il PDF non viene nemmeno aperto: "
+            "con un limite attivo un file corrotto e' scoperto dalla POST "
+            "invece che dal worker, ed e' un cambio di contratto dichiarato "
+            "nel README. L'indicizzazione costa circa un secondo per segmento."
+        ),
+    )
+    min_text_page_ratio = models.FloatField(
+        "rapporto minimo di pagine con testo",
+        default=0.0,
+        validators=[MinValueValidator(0.0), MaxValueValidator(1.0)],
+        help_text=(
+            "Fra 0 e 1. Sotto questa quota di pagine con testo estraibile il "
+            "documento e' marcato «Fallito» dal worker, con il conteggio nel "
+            "motivo. Serve contro le scansioni PARZIALI: se NESSUNA pagina ha "
+            "testo interviene gia' il controllo di RF-10. Zero disattiva. "
+            "L'OCR resta fuori ambito (REQUIREMENTS §8)."
+        ),
     )
 
     class Meta:
