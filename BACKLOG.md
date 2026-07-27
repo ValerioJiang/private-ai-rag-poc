@@ -338,6 +338,110 @@ si pota con `prune_db_task_results`; lo script di dimostrazione è **solo
 PowerShell**, e la via portabile sono i `curl` del README. Dettaglio in
 [`plans/2026-07-25-2132-P6-plan-report.md`](plans/2026-07-25-2132-P6-plan-report.md).
 
+## P7 — Validazione dei PDF in ingresso (post-consegna)
+
+Fase aperta dopo la consegna. Il piano
+([`plans/2026-07-27-0759-Validazione-plan.md`](plans/2026-07-27-0759-Validazione-plan.md))
+dichiara la fase come `T-44 → T-48` **senza scomporla voce per voce**: la tabella
+qui sotto fa corrispondere quei cinque id alle sue sei fasi, seguendo i messaggi
+di commit che il piano stesso propone al passo 5.9.
+
+| ID | Attività | Pri | Stima | Dipende da |
+|---|---|---|---|---|
+| T-44 | I tre limiti di ammissione come configurazione su `KnowledgeBase` (RF-22) + fieldset nell'admin — fase 1 | M | 1h | T-08 |
+| T-45 | Eccezioni nuove, punto unico di validazione (`rag/services/validation.py`) e aggancio ai tre inneschi che accettano un file nuovo — fasi 2-3 | M | 2h | T-44 |
+| T-46 | Rifiuto delle scansioni parziali sotto quota: `min_text_page_ratio` in `load_pdf()`, scoperto dal worker — fase 4 | S | 1h | T-44 |
+| T-47 | Verifica end-to-end con Ollama vero, i due processi e l'admin nel browser — fase 5 | M | 1h | T-45, T-46 |
+| T-48 | Documentazione (README, ARCHITECTURE, REQUIREMENTS, BACKLOG), report di esecuzione e commit — fase 6 | M | 1h | T-47 |
+
+**Verifica di fase:** i sei controlli (a)–(f) del piano hanno un esito misurato —
+400 sopra la dimensione e sopra le pagine senza lasciare riga né file, 202 e poi
+`indexed` con i limiti a zero, `failed` col conteggio nel motivo su una scansione
+parziale, errore sul campo *file* dall'admin, e nessuna rivalutazione risalvando
+un documento già in archivio — più la controprova con `scripts/dimostrazione.ps1`,
+che a limiti disattivati non deve mostrare differenze rispetto al README.
+
+**Stato al 27/07/2026: INCOMPLETA. T-44, T-45 e T-46 chiuse; T-47 NON eseguita;
+T-48 in corso.** Il piano prevedeva sei fasi, ne sono state eseguite **quattro**.
+Nessuna attività è stata tagliata: T-47 e T-48 sono **aperte**, non rinunciate.
+
+**Perimetro svolto.** T-44 ha aggiunto `max_file_size_mb` (0), `max_page_count`
+(0) e `min_text_page_ratio` (0.0) a `KnowledgeBase`, con la migrazione
+`0006_limiti_di_ammissione` **generata** con `makemigrations` (T-40) e applicata,
+e il fieldset «Limiti di ammissione» nell'admin. **Zero disattiva**, ed è il
+predefinito: le righe esistenti — compresa la base creata dalla `0004` —
+mantengono il comportamento con cui P2 → P6 hanno misurato, come già per la
+`0005`. T-45 ha aggiunto tre eccezioni — `FileTroppoGrande` e `TroppePagine`,
+**sincrone** → 400, e `PdfTestoInsufficiente`, **nel worker** → `failed` — più
+`conta_pagine()` e `conta_pagine_da_percorso()` in `loaders.py` e il nuovo modulo
+`rag/services/validation.py`, che è il **punto unico** di validazione. Lo chiamano
+i **tre** inneschi che accettano un file nuovo: `POST /api/documents/` (→ 400),
+`manage.py ingest` (→ `CommandError`) e `DocumentAdminForm.clean()` (→ errore sul
+campo *file*), **tutti e tre dopo la deduplica**, perché il 409 e la sua garanzia
+sono già documentati e provati in P4. «Reindicizza» resta deliberatamente fuori:
+non riceve alcun file, e abbassare un limite non deve far fallire il riesame di
+ciò che è già in archivio. T-46 ha portato `min_text_page_ratio` fino a
+`load_pdf()`: `PdfSenzaTesto` conserva la precedenza — «nessuna pagina» è una
+diagnosi più precisa di «poche pagine» e ha un requisito suo (RF-10) — e
+`page_count` resta il totale del **file**, non delle pagine con testo (CA-2). La
+suite passa da **29 a 45 test**: 9 su `POST /api/ask/`, 11 sull'ingestione, 11 su
+segmentazione e factory, **14** nel nuovo `test_validazione.py`.
+
+**Quel che NON è stato fatto, e non va segnato altrimenti.** **T-47 non è mai
+stata eseguita**: richiede Ollama vero, i due processi e un browser sull'admin.
+Restano quindi **senza esito misurato** tutti e sei i controlli (a)–(f) della
+verifica di fase — **la prova manuale di rifiuto dall'admin nel browser
+compresa**, che la fase 3 aveva esplicitamente rimandato qui — e la controprova
+con `scripts/dimostrazione.ps1`. Il rischio che quella controprova esiste per
+escludere resta quindi aperto: che il predefinito a zero non sia neutro e che una
+misura del README sia cambiata. Nulla, oggi, lo esclude per misura. **T-48 è in corso**:
+il riallineamento della documentazione è in svolgimento, il report di esecuzione
+si ferma alla fase 3 e i due requisiti che il piano proponeva al passo 5.6 non
+sono stati assegnati — `REQUIREMENTS.md` si ferma a **RF-30**. Nessun esito di
+T-47 può comparire in quei documenti, perché non esiste.
+
+**Scostamenti dal piano**, per esteso nel report di esecuzione: il passo 3.4 era
+**falso** — il `try/except IngestionError` di `ingest.py` sta in `handle()` e
+avvolge solo `ingest_document()`, non `_crea_documento()`, quindi la traduzione è
+stata ripetuta attorno alla sola chiamata nuova; la §3.10 **non reggeva** per
+`manage.py ingest`, perché un `django.core.files.File` che incarta un file aperto
+non espone né `.path` né `.temporary_file_path()` e il comando leggeva in memoria
+proprio il file che il limite esiste per respingere (corretto con un argomento
+`percorso` esplicito, più un test di regressione); da quel test l'aritmetica del
+piano scala di uno, 38 → 43 → **45** invece di 44.
+
+**Debito di processo, da non addolcire.** I due commit di questo periodo —
+`b9c3625 feat: add admission limits for PDF uploads in KnowledgeBase` e
+`2a77bf0 Implementa un'interfaccia utente…` — **non seguono la convenzione del
+progetto**, che vuole il messaggio in italiano, prefissato dalla fase e con gli id
+delle attività (`P7: … (T-44)`). Il secondo mescola inoltre lavoro che il piano
+isolava espressamente. Il report di esecuzione registra anche un **commit non
+autorizzato e pushato** fra la fase 2 e la fase 3, annullato dall'operatore con un
+`push --force-with-lease`. Dettaglio in
+[`plans/2026-07-27-0759-Validazione-plan-report.md`](plans/2026-07-27-0759-Validazione-plan-report.md).
+
+## T-49 — Interfaccia di interrogazione e accesso (fuori piano)
+
+| ID | Attività | Pri | Stima | Dipende da |
+|---|---|---|---|---|
+| T-49 | Rotte `/`, `/accedi/`, `/esci/`, tema condiviso e pagina `/chiedi/` ridisegnata | S | — | T-30 |
+
+**Sta qui e non fra le attività di P7 perché non era nel piano di P7.** Il commit
+`2a77bf0` l'ha introdotta mentre P7 era in corso; l'id è assegnato **a posteriori**
+— il lavoro è stato svolto prima che esistesse una voce di backlog — e la stima è
+vuota per la stessa ragione. Mescolarla a T-44 → T-48 farebbe apparire pianificato
+ciò che non lo è stato.
+
+**Stato al 27/07/2026: svolta, non verificata dall'operatore.** Rotte nuove `/`
+(smistamento per ruolo), `/accedi/` e `/esci/`; `GET /api/ask/` rimanda a
+`/chiedi/` invece di rispondere 405, mentre il **`POST` resta invariato**. Il
+motivo che l'ha resa necessaria è un difetto, non un abbellimento: `LOGIN_URL`
+puntava al login dell'admin, che **rifiuta chi non è staff**, quindi un utente
+ordinario non poteva entrare affatto. Aggiunti un tema condiviso
+(`templates/rag/_tema.html`), la pagina di login e l'admin nella stessa tavolozza,
+e `chiedi.html` ridisegnata. **RNF-01 verificato** sulle pagine rese: zero
+riferimenti esterni.
+
 ---
 
 ## Distribuzione nel tempo
@@ -345,6 +449,9 @@ PowerShell**, e la via portabile sono i `curl` del README. Dettaglio in
 Stima totale: **44 ore**, così ripartite: `M` 28,25 h · `S` 13,25 h · `C` 2,5 h.
 
 Le sole attività indispensabili stanno quindi in poco più di 28 ore.
+
+Il conto e la tabella qui sotto riguardano **P0 → P6**, cioè la consegna del
+lunedì 27: P7 e T-49 sono successive e non vi rientrano.
 
 | Giorno | Obiettivo | Attività |
 |---|---|---|

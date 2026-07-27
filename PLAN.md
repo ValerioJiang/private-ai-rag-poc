@@ -125,6 +125,52 @@ funzionava su Windows, T-43 perché il primo verbale non conteneva il log del
 worker che aveva svolto il lavoro. Sono i difetti che quelle prove esistevano per
 trovare, e trovarli è il loro esito utile.
 
+### P7 — Validazione dei PDF in ingresso (post-consegna, ~4h)
+
+Tre limiti di ammissione configurabili dall'admin su `KnowledgeBase` — dimensione
+massima, numero massimo di pagine, rapporto minimo di pagine con testo — applicati
+da **un solo punto**, `rag/services/validation.py`, che chiamano i tre inneschi
+che accettano un file nuovo. Il confine è quello che il progetto ha già scelto
+altrove: ciò che si sa subito lo dice la `POST` (**400**, nessuna riga creata e
+nessun file scritto), ciò che richiede l'estrazione lo scopre il worker (`failed`
+con il motivo). Zero disattiva ciascun controllo ed è il predefinito, quindi
+nessuna misura dei report di P2 → P6 diventa incomparabile. Piano in
+[`plans/2026-07-27-0759-Validazione-plan.md`](plans/2026-07-27-0759-Validazione-plan.md).
+
+**Perimetro effettivamente svolto: le fasi 1 → 4 delle sei previste dal piano.**
+La **fase 5** — la verifica end-to-end con Ollama vero, i due processi e un
+browser sull'admin — **non è mai stata eseguita**, e la **fase 6** è in corso.
+**P7 è quindi incompleta**, e non va segnata altrimenti: i sei controlli (a)–(f)
+del piano e la controprova con `scripts/dimostrazione.ps1` restano **senza esito
+misurato**, la prova manuale di rifiuto dall'admin nel browser compresa.
+
+Quel che è verde lo è per misura: tre campi su `KnowledgeBase` con migrazione
+`0006_limiti_di_ammissione` **generata** con `makemigrations` e applicata; tre
+eccezioni nuove (`FileTroppoGrande` e `TroppePagine` sincrone → 400,
+`PdfTestoInsufficiente` nel worker → `failed`); `conta_pagine()` e
+`conta_pagine_da_percorso()` in `loaders.py`; l'aggancio a `POST /api/documents/`,
+`manage.py ingest` e `DocumentAdminForm.clean()`, **tutti e tre dopo la
+deduplica**, con «Reindicizza» deliberatamente fuori perché non riceve alcun file;
+e `load_pdf()` che respinge le scansioni parziali conservando la precedenza di
+`PdfSenzaTesto` e lasciando `page_count` al totale del file (CA-2). La suite passa
+da **29 a 45 test**.
+
+Tre scostamenti dal piano, tutti dichiarati nel report di esecuzione. Il passo 3.4
+era **falso**: il `try/except IngestionError` di `ingest.py` sta in `handle()` e
+avvolge solo `ingest_document()`, non `_crea_documento()`, quindi la traduzione è
+stata ripetuta attorno alla sola chiamata nuova. La §3.10 **non reggeva** per
+`manage.py ingest` — misurato, non dedotto: un `django.core.files.File` che
+incarta un file aperto non espone né `.path` né `.temporary_file_path()`, e il
+comando finiva per leggere in memoria proprio il file che il limite esiste per
+respingere; corretto con un argomento `percorso` esplicito più un test di
+regressione. Da quel test l'aritmetica del piano scala di uno: 38 → 43 → **45**,
+non 44.
+
+**Fuori dal piano di P7**, e da non confondere con esso: il commit `2a77bf0` ha
+aggiunto un'interfaccia di interrogazione e il percorso di accesso per gli utenti
+non staff. Non era previsto qui, ed è registrato per quello che è in
+[`BACKLOG.md`](BACKLOG.md), voce **T-49**.
+
 ## Fuori scope (da dichiarare nel README come limiti noti)
 
 Reranker, ricerca ibrida BM25+vettoriale, streaming SSE, memoria

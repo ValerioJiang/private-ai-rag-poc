@@ -9,7 +9,7 @@ solo detto in meno parole.
 
 | Sezioni | Cosa ci trovi | Quando servono |
 |---|---|---|
-| **§1–§2** | Cosa fa il sistema e di quali pezzi è fatto | sempre: sono i primi cinque minuti |
+| **§1–§2** | Cosa fa il sistema, di quali pezzi è fatto, come ci si entra | sempre: sono i primi cinque minuti |
 | **§3–§4** | I due flussi: carico un PDF, faccio una domanda | sempre |
 | **§5–§7** | La configurazione come tabella, la mappa dei file, le due metà del database | prima di mettere mano al codice |
 | **§8–§9** | Le dieci scelte e i due modelli, con le alternative scartate | quando serve rispondere a un «perché non…?» |
@@ -57,12 +57,21 @@ flowchart TB
 
 | | Cos'è | Dove gira |
 |---|---|---|
-| **1. Django** | Il server: API REST, admin, `/health`, pagina `/chiedi/` | processo locale |
+| **1. Django** | Il server: API REST, admin, `/health`, le pagine `/accedi/` e `/chiedi/` | processo locale |
 | **2. `db_worker`** | Secondo processo: fa il lavoro lento (indicizzare) | processo locale |
 | **3. PostgreSQL** | L'**unico** servizio con stato: dati, vettori, coda | Docker, porta 5434 |
 | **4. Ollama** | L'inferenza: embedding *e* generazione | nativo sull'host |
 
 Niente Redis, niente Celery, niente servizi cloud. La coda vive dentro Postgres.
+
+**Come ci si entra.** Una porta sola, `/accedi/`, e poi il sistema smista per
+ruolo: chi amministra nel pannello di gestione, tutti gli altri su `/chiedi/`,
+che è la pagina da cui si fa una domanda. Anche la radice `/` fa questo e
+nient'altro — non mostra niente, decide dove mandarti. È **instradamento, non
+autorizzazione**: nessuno guadagna un permesso, e l'admin continua a difendersi
+da sé. Prima esisteva solo il login *dell'admin*, che rifiuta chi non è staff,
+e un utente ordinario non poteva entrare affatto — nemmeno per raggiungere la
+pagina fatta per lui. Non era una scelta: era una porta mancante.
 
 **«Accodare» e «rispondere subito», in concreto.** Indicizzare un PDF è lento —
 misurati 12,4 s a freddo e 2,7 s a caldo su un PDF di 4 pagine, quasi tutti spesi
@@ -112,6 +121,33 @@ sequenceDiagram
     W->>P: 2. scrive i segmenti Django
     W->>P: «Indicizzato»
 ```
+
+### Prima di accettare, i limiti
+
+Il diagramma comincia col documento già accettato. Prima c'è una domanda:
+questo file lo prendiamo? Rispondono tre limiti, che sono **righe di database**
+sulla base di conoscenza — `0` disattiva, ed è il predefinito, quindi chi non li
+configura vede il sistema di sempre.
+
+| Limite | Chi lo scopre | Cosa succede |
+|---|---|---|
+| Dimensione massima (MB) | chi carica, **subito** | respinto: nessuna riga creata, nessun file scritto (**400** via HTTP) |
+| Pagine massime | chi carica, **subito** | idem |
+| Quota minima di pagine con testo | il **worker** | documento «Fallito», col conteggio nel motivo |
+
+I primi due si vedono senza leggere il documento: la dimensione è un attributo
+del file, le pagine si contano aprendone il solo catalogo. Il terzo no — per
+sapere quante pagine hanno testo bisogna estrarlo — ed è per questo che arriva
+tardi. Serve contro le **scansioni parziali**: cento pagine di cui dieci con
+testo diventavano un documento «Indicizzato» a metà, e nulla lo diceva. Se
+*nessuna* pagina ha testo interviene invece il controllo che c'era già, quello
+dell'OCR mancante.
+
+A validare è **un punto solo**, chiamato dai tre inneschi che ricevono un file
+nuovo — la `POST`, `manage.py ingest`, il salvataggio dall'admin — per la stessa
+ragione per cui l'accodamento è uno solo. L'azione «Reindicizza» resta fuori:
+non riceve alcun file, rilegge dal disco un documento già accettato, e abbassare
+un limite non deve far fallire il riesame di ciò che è già in archivio.
 
 ### Innesco ≠ esecuzione
 
@@ -227,6 +263,12 @@ effetto sui documenti già indicizzati, cambiare `top_k` ce l'ha sulla domanda
 successiva. Mettere il chunking sulla pipeline farebbe mostrare all'admin un
 parametro che mente.
 
+I **limiti di ammissione** (§3) stanno anch'essi sulla `KnowledgeBase`, ma non
+appartengono a nessuna delle due famiglie: dicono *quali file si accettano*, non
+come l'indice è costruito né come viene interrogato. Per questo non entrano
+nell'impronta che segnala i documenti disallineati — cambiare un limite **non**
+manda «da reindicizzare» nulla di ciò che è già in archivio.
+
 Il punto in cui quelle righe diventano oggetti LangChain è **uno solo**:
 
 ```mermaid
@@ -246,7 +288,7 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph ingresso["Ingressi"]
-        V["views.py + serializers.py<br/>/health · /api/… · /chiedi/"]
+        V["views.py + serializers.py<br/>/health · /api/… · /accedi/ · /chiedi/"]
         AD["admin.py<br/>la consolle di governo"]
         CM["management/commands/<br/>ingest · ask"]
     end
@@ -255,12 +297,16 @@ flowchart TB
         QU["query.py"]
         FA["factories.py"]
         TA["tasks.py<br/>l'unico punto che accoda"]
+        VA["validation.py<br/>l'unico punto che accetta"]
     end
     subgraph dati["Modelli"]
         M1["profiles.py<br/>la configurazione"]
         M2["domain.py<br/>KnowledgeBase · Document · Chunk"]
         M3["logs.py<br/>QueryLog · RetrievedChunk"]
     end
+    V --> VA
+    CM --> VA
+    AD --> VA
     V --> TA
     V --> QU
     CM --> IN
@@ -283,8 +329,9 @@ flowchart TB
 | `rag/services/factories.py` | La cerniera: configurazione → oggetti LangChain |
 | `rag/services/ingestion.py` | Flusso A |
 | `rag/services/query.py` | Flusso B |
+| `rag/services/validation.py` | L'unico punto che decide se un file si accetta |
 | `rag/tasks.py` | L'unico punto che accoda lavoro al worker |
-| `rag/views.py` | Guscio HTTP, nessuna regola di dominio |
+| `rag/views.py` | Guscio HTTP e le poche pagine HTML, nessuna regola di dominio |
 | `rag/admin.py` | La consolle di governo — è il punto della traccia |
 
 ---
@@ -634,9 +681,9 @@ del §8, dichiarate perché chi ci mette mano non le riscopra per caso.
 
 | Limite | Conseguenza concreta |
 |---|---|
-| **Niente OCR** | Un PDF di sole immagini (scansione) produce zero segmenti. Il caso è **rilevato** e segnalato come errore esplicito, non lasciato passare come documento vuoto |
+| **Niente OCR** | Un PDF di sole immagini (scansione) produce zero segmenti. Il caso è **rilevato** e segnalato come errore esplicito, non lasciato passare come documento vuoto. La scansione **parziale** la intercetta la quota minima di pagine con testo (§3), spenta per default: dichiara il problema, non lo risolve |
 | **Niente memoria conversazionale** | Ogni domanda è indipendente: «e quanti sono in totale?» non ha modo di sapere a cosa si riferisce |
-| **Niente permessi sui documenti** | Ogni utente autenticato vede l'intera base di conoscenza |
+| **Niente permessi sui documenti** | Ogni utente autenticato vede l'intera base di conoscenza. Lo smistamento per ruolo dell'accesso (§2) è instradamento, non autorizzazione: non cambia chi vede cosa |
 | **Niente valutazione della qualità** | Nessun punteggio RAGAS o simili: senza un dataset di riferimento sarebbe un numero senza significato. I `QueryLog` conservano però la materia prima per costruirla |
 | **Niente streaming** | La risposta arriva tutta insieme a generazione finita, non parola per parola |
 
@@ -677,6 +724,12 @@ garanzia del codice, il prompt dipende dall'obbedienza del modello.
 RNF-01 è **verificato**, non solo argomentato: il 26/07/2026 il ciclo completo
 ha funzionato a interfacce di rete disattivate, con gli stessi tempi, e tutte e
 dodici le richieste HTTP dei due processi sono andate a `localhost:11434`.
+
+Le pagine HTML aggiunte **dopo** quella prova non scaricano nulla dall'esterno —
+niente font, niente CDN, niente script di terzi: ogni pagina è una sola
+richiesta, e il tema sta dentro il template invece che in un file a parte. È
+verificato sul sorgente di ciò che il browser riceve, **non** rimisurato a rete
+staccata: chi rifà quella prova la rifà anche per loro.
 
 Tre cose restano però **fuori** da quella garanzia:
 

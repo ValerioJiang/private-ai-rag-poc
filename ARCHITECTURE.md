@@ -43,7 +43,7 @@ configurazione dall'admin (`LLMProfile.base_url`), non una modifica al codice.
 ```mermaid
 flowchart LR
     subgraph client["Esterno"]
-        C["curl / Postman<br/>Admin Django"]
+        C["curl / Postman<br/>Admin Django<br/>browser: /accedi/ · /chiedi/"]
     end
     subgraph perimeter["Perimetro privato — nessun contenuto documentale esce"]
         direction TB
@@ -89,6 +89,7 @@ flowchart TB
         A2["POST /api/ask/"]
         A3["Admin Django"]
         A4["manage.py ingest / ask"]
+        A5["Pagine HTML<br/>/ · /accedi/ · /esci/ · /chiedi/"]
     end
     subgraph svc["Livello servizi"]
         S1["ingestion.py"]
@@ -113,6 +114,7 @@ flowchart TB
     A4 --> S1
     A4 --> S2
     A2 --> S2
+    A5 --> A2
     A3 --> cfg
     S1 --> S3
     S2 --> S3
@@ -135,6 +137,44 @@ cioè con più worker. Il receiver di `rag/signals.py` libera memoria e rende
 l'effetto immediato nel processo che ha salvato: è utile, non è la garanzia.
 La distinzione conta perché chi la ignorasse replicherebbe la forma senza la
 sostanza.
+
+**Le rotte che rendono HTML sono un ingresso in più e non aggiungono regole.**
+Sono quattro — `/` che smista, `/accedi/`, `/esci/` (in `POST`, come Django
+pretende dalla 5) e `/chiedi/` — e nessuna tocca il dominio: `/chiedi/` rende un
+template e a interrogare è il browser, con una `fetch` verso il `POST /api/ask/`
+già esistente. Servono a chiudere un buco d'accesso che non era voluto.
+
+**`LOGIN_URL` puntava ad `admin:login`, che è il login *dell'admin*.**
+`AdminAuthenticationForm` rifiuta chi non ha `is_staff`, quindi un utente
+ordinario non poteva entrare **affatto**, nemmeno per raggiungere `/chiedi/`,
+che è la pagina fatta per lui. Non era una restrizione decisa: mancava una porta
+d'ingresso propria, e `rag.views.Accesso` — sottoclasse di `LoginView` — è
+quella porta, una sola e valida per tutti.
+
+**Lo smistamento è instradamento, non autorizzazione.** Dopo l'accesso si atterra
+sull'admin se `is_staff` e su `/chiedi/` altrimenti; la radice fa lo stesso per
+chi ha già una sessione, e manda al login chi non ce l'ha. Nessuno guadagna un
+permesso che non aveva: l'admin continua a difendersi da sé — RF-30 non
+regredisce — e `is_staff` è lo stesso discriminante che Django usa per decidere
+chi vi entra, mentre usarne un altro creerebbe la categoria di chi viene
+smistato dove poi lo respingono. Il ramo per
+ruolo sta in `get_default_redirect_url()` e **non** in `get_success_url()`, che
+decide anche quando la richiesta porta un `next`: sovrascrivere la seconda
+perderebbe la pagina che l'utente aveva chiesto prima di essere mandato al login.
+Il ruolo decide solo dove non c'è nulla di meglio.
+
+**`GET /api/ask/` rimanda a `/chiedi/` (302) invece di rispondere 405.** Chi
+apre quell'indirizzo col browser perché l'ha letto nel README trovava un errore
+senza via d'uscita, mentre la pagina che gli serve esiste a un rimando di
+distanza. Il `GET` non richiede sessione — non espone né documenti, né risposte,
+né l'elenco delle configurazioni — mentre il **`POST` resta invariato**,
+autenticato, ed è l'unico verbo che raggiunge `rispondi()`: è ciò che dice il
+permesso `SoloLaRispostaRichiedeSessione`. Il contratto per i client non cambia.
+
+`LOGIN_URL` e `LOGOUT_REDIRECT_URL` stanno nei settings e **non violano RF-22**,
+per la stessa ragione di `TASKS` (§7.5): sono instradamento HTTP, come
+`DATABASES` e `OLLAMA_BASE_URL`. Nessuna risposta del sistema cambia perché
+cambia la pagina su cui si atterra.
 
 ---
 
@@ -193,6 +233,80 @@ alcun fallimento. È il modo più probabile di sbagliare l'avvio del progetto, e
 è la ragione per cui `/health` porta la voce «coda» (T-34), che dice quanti task
 attendono e chi deve lavorarli.
 
+### 4.1 L'ammissione precede tutto (RF-31, RF-32, T-44)
+
+Prima ancora dello stato «In attesa» c'è la domanda se il file vada accettato.
+I tre inneschi che ricevono un file **nuovo** — `POST /api/documents/`,
+`manage.py ingest` e il salvataggio dall'admin (`DocumentAdminForm.clean()`) —
+chiamano **un solo punto di validazione**,
+`verifica_ammissibilita(file, knowledge_base)` in `rag/services/validation.py`.
+È la stessa forma per cui esiste un solo `ingest_document()` (P2) e un solo
+`accoda_indicizzazione()` (P5): se ciascun innesco validasse per conto proprio,
+la prima modifica ai limiti si dimenticherebbe in due punti su tre.
+
+La verifica sta **dopo la deduplica** in tutti e tre, e **prima** di qualunque
+scrittura. Dopo la deduplica perché il 409 e la garanzia che porta con sé —
+niente riga, niente file — erano già documentati e provati, e anteporre il
+controllo li farebbe regredire; «ce l'hai già» è anche la risposta più utile a
+chi ricarica un file troppo grande. Prima delle scritture perché un file
+respinto non deve lasciare né una riga né un PDF in `MEDIA_ROOT`.
+
+L'azione «Reindicizza» resta **fuori**, di proposito: non riceve alcun file,
+rilegge dal disco un documento già accettato, e abbassare un limite non deve far
+fallire il riesame di ciò che è già in archivio.
+
+I limiti sono tre, e si dividono per **quando** si scoprono:
+
+| Limite | Chi lo scopre | Eccezione ed esito |
+|---|---|---|
+| `max_file_size_mb` | l'ingresso, dalla sola `.size` | `FileTroppoGrande` → **400**, `CommandError`, o errore sul campo *file* |
+| `max_page_count` | l'ingresso, aprendo il **catalogo** del PDF | `TroppePagine` → idem |
+| `min_text_page_ratio` | il **worker**, che deve prima estrarre il testo | `PdfTestoInsufficiente` → documento «Fallito», col conteggio nel motivo (RF-32) |
+
+`PdfTestoInsufficiente` **non è** `PdfSenzaTesto`: quella copre il caso in cui
+*nessuna* pagina abbia testo (RF-10) e ne conserva la precedenza, questa la
+scansione **parziale** — cento pagine di cui dieci con testo — che prima passava
+in silenzio e produceva un documento «Indicizzato» a metà. `page_count` resta il
+totale delle pagine del **file** anche quando il controllo scatta: è ciò che
+l'admin mostra (CA-2), e contarci le sole pagine con testo renderebbe invisibile
+proprio la sproporzione che il controllo serve a segnalare.
+
+**Il file grande non si carica in memoria per scoprire che è troppo grande.**
+`conta_pagine_da_percorso()` apre il PDF **per nome** e ne legge il solo
+catalogo; la lettura da stream — `pymupdf.open(stream=…, filetype="pdf")`,
+verificato sulla 1.28.0 installata e non dato per scontato — è il ramo di
+riserva, e ci si arriva solo quando il file in memoria ci sta già per
+definizione: Django spoola da sé gli upload oltre `FILE_UPLOAD_MAX_MEMORY_SIZE`
+(2 621 440 byte) su un `TemporaryUploadedFile`, che espone
+`temporary_file_path()`.
+
+**Uno scostamento misurato in esecuzione** ha aggiunto un terzo ramo, ed è il
+genere di cosa che la pianificazione non poteva sapere: `django.core.files.File`
+che incarta un file aperto **non espone né `.path` né `temporary_file_path()`**.
+Il piano dava per scontato che `manage.py ingest` cadesse sul ramo del percorso;
+non ci cadeva, e leggeva in memoria proprio il file che il limite esiste per
+respingere. Da qui l'argomento `percorso` esplicito, che il comando passa perché
+lo conosce già.
+
+**Il puntatore torna sempre a zero** dopo la lettura, e nel `finally` — anche se
+il conteggio solleva. È il difetto accertato in P2 su `compute_checksum()`, e
+leggere per contare le pagine ha esattamente la stessa forma. Nel `clean()`
+dell'admin il file è ora letto **due volte**, checksum e conteggio, e un test
+accerta che il salvataggio non produca un PDF di zero byte.
+
+**Un cambio di contratto, da dichiarare.** Con `max_page_count > 0` la `POST`
+apre il PDF, e scopre quindi anche un file **corrotto**: la risposta è **400**,
+perché la condizione è nota prima di ogni scrittura e nessuna riga «Fallito»
+resta in elenco. Senza quel limite il PDF non viene aperto affatto e un file
+illeggibile resta di competenza del worker, come prima di T-44. Il
+comportamento predefinito è quindi invariato, perché il default è 0.
+
+I tre limiti e i loro rami sono coperti da 14 test in
+`rag/tests/test_validazione.py`. **Non è invece stata eseguita** la verifica
+end-to-end via HTTP con worker e Ollama veri: quel che è misurato è
+`manage.py ingest` con `max_page_count = 2` su un PDF di 3 pagine, che si ferma
+con `CommandError`, esce con codice 1 e non lascia alcuna riga.
+
 ---
 
 ## 5. Flusso di interrogazione
@@ -216,10 +330,10 @@ sequenceDiagram
     API-->>U: answer + sources + latency_ms
 ```
 
-**Stato attuale.** L'endpoint è P4 (T-30): oggi l'unico ingresso è
-`manage.py ask "<domanda>"` (T-27), che chiama `rispondi()` in
-`rag/services/query.py`. Il diagramma resta il bersaglio, e il servizio è
-scritto perché P4 debba solo esporlo via HTTP.
+**Stato attuale.** Il diagramma è il sistema da P4 (T-30). Gli ingressi passano
+tutti da `rispondi()` in `rag/services/query.py`: `POST /api/ask/` e
+`manage.py ask "<domanda>"` (T-27). La pagina `/chiedi/` non ne aggiunge un
+terzo — è il browser che chiama quello stesso endpoint (§3).
 
 Tre precisazioni che il diagramma non può contenere, tutte decise in P3:
 
@@ -270,6 +384,24 @@ stesso principio:
 Si adottano **entrambi**: gli FK per la leggibilità nell'admin, il fingerprint
 come criterio effettivo di `needs_reindex`. Il costo è un `CharField` in più
 (T-09).
+
+**Una terza famiglia, che sta sulla `KnowledgeBase` ma fuori dall'impronta.**
+I limiti di ammissione di T-44 — `max_file_size_mb`, `max_page_count`,
+`min_text_page_ratio` — sono parametri di comportamento, quindi righe di
+database e non costanti (RF-31, cioè RF-22 applicato ai limiti). Stanno sulla
+base di conoscenza per due ragioni: riguardano **quali file si accettano**, non
+come si divide il testo già estratto, e un `ChunkingProfile` è condiviso fra basi
+diverse, che possono voler accettare cose diverse. In `config/settings/`
+sarebbero una violazione di RF-22, non un'infrastruttura.
+
+Non entrano però in `index_fingerprint()` — **verificato sul sorgente**: la
+migrazione `0006` aggiunge i tre campi e non tocca quella funzione, che continua
+a coprire i soli valori dei profili di embedding e di segmentazione. È voluto:
+un limite d'ingresso non descrive *come* l'indice è costruito, quindi
+modificarlo non deve marcare «disallineato» un solo documento già indicizzato
+(RF-25). Ciò che era ammissibile ieri resta indicizzato oggi, e la
+reindicizzazione non lo rivaluta — è la stessa ragione per cui l'azione
+«Reindicizza» non passa dalla validazione (§4.1).
 
 ### 6.2 Diagramma ER
 
@@ -327,6 +459,9 @@ erDiagram
         int embedding_profile_id FK
         int chunking_profile_id FK
         text description
+        int max_file_size_mb "0 = disattivo"
+        int max_page_count "0 = disattivo"
+        float min_text_page_ratio "0.0 = disattivo"
     }
     RagPipeline {
         int id PK
@@ -935,6 +1070,12 @@ buttato** come il resto, ma scritto con cura fin da subito e promosso in T-14.
 5. **PDF scansionati non supportati.** PyMuPDF estrae testo, non fa OCR: un PDF
    di sole immagini produce zero chunk. Il caso è rilevato e segnalato come
    errore esplicito invece di generare un documento vuoto e silenzioso.
+   La scansione **parziale** — poche pagine con testo su molte — non era invece
+   rilevata affatto, e diventava un documento «Indicizzato» senza che nulla
+   dicesse del resto mancante. Da T-44 la copre
+   `KnowledgeBase.min_text_page_ratio` (RF-32, §4.1), spento per default: il
+   controllo dichiara il problema, non lo risolve, perché l'OCR resta fuori
+   ambito.
 6. **La lunghezza dell'estratto è configurazione, anche se è solo
    presentazione.** Fino a P5 la citazione mostrata accanto a ogni fonte era
    troncata a `LUNGHEZZA_ESTRATTO = 300`, una costante in `rag/services/query.py`
@@ -1081,6 +1222,20 @@ era staccata* non dimostra che non ne uscirebbe a rete attiva per un percorso ch
 a rete staccata fallisce in silenzio. A escluderlo concorrono gli altri argomenti
 di questa sezione — le dipendenze assenti, `LANGSMITH_TRACING` forzato — e i tre
 limiti dichiarati qui sotto, il primo dei quali resta il vero varco.
+
+**Le pagine HTML non aprono un varco nuovo, ed è una proprietà mantenuta di
+proposito.** Una pagina è il posto in cui il traffico verso l'esterno rientra
+per la porta di servizio: un font remoto, un foglio di stile da CDN, uno script
+di terzi. Qui non ce n'è nessuno. La tavolozza condivisa da `/accedi/` e
+`/chiedi/` sta in `templates/rag/_tema.html`, un frammento **incluso** e non un
+file statico, così ogni pagina resta **una sola richiesta**: è la proprietà da
+cui dipende la prova di T-43, che non deve poggiare su un secondo scaricamento
+riuscito. `templates/admin/base_site.html` riusa la stessa tavolozza
+ridefinendo le custom properties dell'admin, senza toccare un selettore di
+Django. **Verificato: zero riferimenti esterni** nelle pagine rese. La prova a
+interfacce disattivate **non è stata rifatta** dopo l'aggiunta delle pagine: la
+sua premessa è stata verificata sul sorgente di ciò che il browser scarica, non
+rimisurata a rete staccata.
 
 Cosa **non** è garantito, e va detto:
 

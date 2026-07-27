@@ -84,7 +84,10 @@ $env:DJANGO_SUPERUSER_PASSWORD = "..."
 python manage.py createsuperuser --noinput
 ```
 
-Admin su http://localhost:8000/admin/ · stato del servizio su `/health`.
+La radice http://localhost:8000/ smista per ruolo: chi non ha una sessione
+finisce sul login `/accedi/`, chi amministra sull'admin `/admin/`, chiunque
+altro sulla pagina di interrogazione `/chiedi/` — cfr. [Interfaccia
+web](#interfaccia-web). Stato del servizio su `/health`.
 
 Il database è pubblicato sulla porta **5434**, non sulla 5432: le porte
 consuete sono spesso già occupate da altri stack. Il valore sta in
@@ -194,8 +197,9 @@ python manage.py migrate
 python manage.py createsuperuser
 ```
 
-`migrate` applica le **cinque** migrazioni dell'app `rag` — l'ultima è
-`0005_excerpt_length` — più quelle di Django e le **19** di
+`migrate` applica le **sei** migrazioni dell'app `rag` — l'ultima è
+`0006_limiti_di_ammissione`, additiva e con i default che lasciano i controlli
+spenti — più quelle di Django e le **19** di
 `django_tasks_database`, che sono di terze parti. La `0004` crea la
 configurazione predefinita funzionante (RF-26): il sistema è utilizzabile senza
 configurare nulla a mano.
@@ -209,7 +213,7 @@ virtualenv appena ricreati (`docker compose down -v`, `.venv` cancellata):
 | `docker compose up -d db` | 1,35 s (il comando torna subito; il contenitore diventa *healthy* in pochi secondi) |
 | `python -m venv .venv` | 13,81 s |
 | `pip install -r requirements.txt` | **125,71 s**, con la cache dei wheel già popolata; senza cache va aggiunto il download di 58 pacchetti |
-| `python manage.py migrate` | **9,38 s** — 45 migrazioni, `CREATE EXTENSION vector` compresa |
+| `python manage.py migrate` | **9,38 s** — 45 migrazioni allora, 46 da quando c'è la `0006`; `CREATE EXTENSION vector` compresa |
 | `createsuperuser --noinput` | 3,99 s |
 | avvio di `runserver` fino al primo `/health` utile | 5,54 s |
 
@@ -316,6 +320,40 @@ Lo script è **solo PowerShell**, per la ragione dichiarata fra i
 con le tre regole del [riquadro qui sopra](#curl-su-windows-powershell-si-scrive-curlexe),
 lette al contrario.
 
+## Interfaccia web
+
+Oltre all'admin il progetto serve quattro rotte fuori da `/api/` — due pagine e
+due rimandi — e nessuna di esse aggiunge un endpoint di dominio: a rispondere
+resta `POST /api/ask/`.
+
+| Rotta | Cosa fa |
+|---|---|
+| `/` | Non rende nulla, smista: anonimo → `/accedi/`, `is_staff` → `/admin/`, utente ordinario → `/chiedi/` |
+| `/accedi/` | Login **per tutti**, non solo per chi amministra; dopo l'accesso smista con lo stesso criterio, salvo un `next` esplicito, che ha la precedenza |
+| `/esci/` | Logout. È un **POST** — da Django 5 `LogoutView` non accetta più il GET — quindi nei template è un form, non un collegamento |
+| `/chiedi/` | La pagina che pone la domanda. Richiede sessione (`login_required`); interroga `POST /api/ask/` dal browser, e `GET /api/pipelines/` per l'elenco delle configurazioni |
+
+**`/accedi/` esiste perché prima non si poteva entrare.** `LOGIN_URL` puntava ad
+`admin:login`, che è il login *dell'admin*: `AdminAuthenticationForm` rifiuta chi
+non ha `is_staff`, quindi un utente ordinario non aveva alcuna porta — nemmeno
+per raggiungere `/chiedi/`, che è fatta per lui. Ora `LOGIN_URL` e
+`LOGOUT_REDIRECT_URL` valgono `accedi`. Lo smistamento è **instradamento, non
+autorizzazione**: nessuno guadagna un permesso che non aveva, e un utente
+ordinario che digitasse `/admin/` viene respinto da Django come prima. Lo
+smistamento è stato **provato su entrambi i ruoli**, chi amministra e chi no.
+
+Dall'admin il collegamento «Visualizza sito» porta ora a `/chiedi/`: prima stava
+a `None` — cioè non compariva — perché la radice non era instradata e avrebbe
+dato un 404. Per chi amministra «vedere il sito» significa vedere ciò che vede
+l'utente, non tornare all'admin da cui è appena uscito.
+
+Le pagine non caricano nulla dall'esterno — niente CDN, niente font remoti,
+nessuna libreria: **verificato**, zero riferimenti esterni nelle pagine rese
+(RNF-01). La tavolozza condivisa sta in `templates/rag/_tema.html` ed è
+**inclusa** nel template, non servita come file statico, così ogni pagina resta
+**una sola richiesta**: è la proprietà da cui dipende la prova a rete staccata di
+T-43.
+
 ## API
 
 Tutti gli endpoint sotto `/api/` richiedono autenticazione (Basic o sessione);
@@ -355,9 +393,13 @@ di sole immagini:
 
 Non esiste un **422**: quella condizione è scoperta dal worker, quando la
 risposta HTTP è già partita. Gli esiti della `POST` sono tre — **202** accettato,
-**400** file mancante o non PDF o base di conoscenza inesistente, **409** stesso
+**400** file mancante o non PDF, base di conoscenza inesistente, oppure un
+[limite di ammissione](#limiti-di-ammissione-dei-pdf) superato, **409** stesso
 contenuto già presente (in questo caso non viene creata alcuna riga né scritto
-alcun file).
+alcun file). Il **409 conserva la precedenza** sui limiti — a chi ricarica lo
+stesso file si risponde «ce l'hai già», non «è troppo grande» — e con
+`max_page_count` attivo il confine fra 400 e worker si sposta di un caso: è
+dichiarato fra i [limiti noti](#limiti-noti).
 
 `--max-time 300` sulle interrogazioni non è prudenza eccessiva, ed è **salito da
 180 s** dopo una misura: la prima richiesta di un processo appena avviato deve
@@ -365,6 +407,12 @@ caricare il modello in VRAM, e in T-41 sono stati misurati **177,9 s di sola
 generazione** sulla prima domanda a modello freddo — cioè appena sotto il limite
 di 180 s che questo README indicava prima, che quindi era troppo stretto. A
 caldo si sta sotto i 3 s di generazione (1 380 ms misurati).
+
+**`GET /api/ask/` non risponde a domande**: rimanda (302) a `/chiedi/`, la pagina
+dell'[interfaccia web](#interfaccia-web). Prima era un `405 Method Not Allowed`
+— corretto per un endpoint di sola scrittura, un vicolo cieco per chi ci arriva
+col browser. Il rimando non richiede sessione, perché non espone nulla; il `POST`
+è invariato in tutto: autenticazione, corpo e codici di risposta.
 
 ## Uso da riga di comando
 
@@ -394,6 +442,55 @@ consegna devono poter girare con un processo solo. Con `--async` accoda e torna
 subito — è il modo più corto di provare la coda senza passare da HTTP, e richiede
 un worker in esecuzione.
 
+## Limiti di ammissione dei PDF
+
+Tre limiti facoltativi, per base di conoscenza, nell'admin sotto **«Limiti di
+ammissione»** di `KnowledgeBase` (migrazione `0006`). Come ogni altro parametro
+di comportamento sono righe di database e non costanti nel codice (RF-22).
+
+| Campo | Effetto | Predefinito |
+|---|---|---|
+| `max_file_size_mb` | Oltre questa dimensione il caricamento è respinto subito | **0** — spento |
+| `max_page_count` | Oltre questo numero di pagine il caricamento è respinto subito | **0** — spento |
+| `min_text_page_ratio` | Sotto questa quota di pagine con testo estraibile il documento va in *fallito*, col conteggio nel motivo | **0.0** — spento |
+
+**Zero disattiva il controllo**, campo per campo. Le installazioni esistenti —
+compresa la base di conoscenza creata dalla `0004` — mantengono così esattamente
+il comportamento con cui P2 → P6 hanno misurato, e nessuna cifra dei report
+precedenti diventa incomparabile: il comportamento nuovo si ottiene
+scegliendolo.
+
+I primi due sono **sincroni** e li verifica un solo punto —
+`verifica_ammissibilita()` in `rag/services/validation.py` — chiamato dai **tre**
+inneschi che accettano un file *nuovo*, sempre **dopo** la deduplica:
+
+| Innesco | Esito quando un limite non è rispettato |
+|---|---|
+| `POST /api/documents/` | **400** col motivo in `detail`; nessuna riga creata, nessun file scritto |
+| `manage.py ingest <file>` | `CommandError` leggibile, uscita 1, nessuna riga creata |
+| Salvataggio dall'admin | Errore di validazione sul campo *file*: il modulo non si salva |
+
+L'azione «Reindicizza» **non** valida, ed è deliberato: non riceve alcun file
+nuovo, rilegge dal disco un documento già accettato, e abbassare un limite non
+deve far fallire il riesame di ciò che è già in archivio. Per la stessa ragione i
+documenti già indicizzati restano tali anche se non passerebbero i limiti
+attuali.
+
+`min_text_page_ratio` è invece **asincrono**, e non poteva essere altrimenti:
+sapere quante pagine contengono testo significa estrarlo, cioè fare il lavoro del
+worker. Sotto quota il documento finisce in `failed` col motivo, e si legge da
+`GET /api/documents/{id}/` come ogni altro fallimento. Serve contro le scansioni
+**parziali**: se *nessuna* pagina ha testo interviene prima il controllo di
+RF-10, che mantiene la precedenza e il suo messaggio sull'OCR. `page_count` resta
+il totale delle pagine del **file**, non di quelle con testo (CA-2).
+
+Cosa è **verificato**: i 14 test di `rag/tests/test_validazione.py`, e
+`manage.py ingest` su un PDF di 3 pagine con `max_page_count = 2` — `CommandError`
+leggibile, uscita 1, nessuna riga creata. Cosa **non** lo è: il ciclo completo per
+via HTTP con worker e Ollama veri, e il rifiuto dall'admin guardato in un
+browser. Sono verifiche **da fare**, e finché non sono state fatte qui non
+compare alcun tempo.
+
 ## Test
 
 ```powershell
@@ -401,7 +498,9 @@ docker compose up -d db
 pytest
 ```
 
-**29 test, 10,44 s** — misurato il 25/07/2026 alla chiusura di T-38.
+**45 test.** Erano 29, cronometrati in **10,44 s** il 25/07/2026 alla chiusura di
+T-38; i 16 aggiunti da T-44 sono verdi, ma la suite non è stata ricronometrata —
+quei 10,44 s valgono per le 29 di allora e non sono un dato aggiornato.
 
 I test **richiedono PostgreSQL** e **non richiedono Ollama**, e le due cose hanno
 ragioni diverse.
@@ -421,7 +520,7 @@ inferenza su una porta chiusa
 
 ```powershell
 $env:OLLAMA_BASE_URL = 'http://127.0.0.1:1'
-pytest -q          # 29 passed in 10.39s
+pytest -q          # 29 passed in 10.39s; con i 45 di oggi, tutti verdi
 ```
 
 la suite passa identica. Puntare a una porta chiusa è una prova più forte che
@@ -435,12 +534,13 @@ migrazione nuova, e i test fallirebbero con una colonna mancante e nessun indizi
 sul perché. Chi ripete la suite molte volte lo aggiunge da riga di comando,
 sapendo che dopo ogni migrazione serve `--create-db`.
 
-Cosa coprono, nei tre file di `rag/tests/`:
+Cosa coprono, nei quattro file di `rag/tests/`:
 
 | File | Copre |
 |---|---|
 | `test_segmentazione_e_factory.py` | 11 test — la segmentazione e le factory seguono la configurazione (RF-19, RF-22), i provider non attivabili sollevano un errore dichiarato (RNF-01), la chiave della cache segue i **valori** e non gli id |
-| `test_ingestione.py` | 9 test — la macchina a stati completa, i casi di errore persistiti (RF-06, RF-10), la reindicizzazione idempotente, la deduplica, l'accodamento |
+| `test_ingestione.py` | 11 test — la macchina a stati completa, i casi di errore persistiti (RF-06, RF-10), la reindicizzazione idempotente, la deduplica, l'accodamento, e la scansione parziale sotto `min_text_page_ratio` (T-44) |
+| `test_validazione.py` | 14 test — i [limiti di ammissione](#limiti-di-ammissione-dei-pdf) (T-44): conteggio delle pagine senza estrarre il testo, limiti spenti che non aprono nemmeno il PDF, il caso esattamente al limite, il puntatore riavvolto dopo la lettura, la `POST` che risponde 400 senza creare nulla, il modulo dell'admin che respinge e il file ammesso che si salva intero |
 | `test_api_ask.py` | 9 test — `POST /api/ask/` con LLM sostituito: fonti e punteggi (RF-13), non-risposta senza interrogare l'LLM (RF-14), `QueryLog` coi tempi separati (RF-16), 401/404/500 |
 
 ## Criteri di accettazione
@@ -464,7 +564,7 @@ un browser. Dichiararle è parte dell'esito.
 | **CA-7** | Due pipeline sulla stessa base danno risposte diverse | `GET /api/pipelines/`, poi `POST /api/ask/` con `pipeline` esplicita | **Superato in P4 e ripetuto in T-42:** creata «Pipeline telegrafica», identica alla predefinita per base di conoscenza, `LLMProfile` e `RetrievalProfile`, **diversa solo per il prompt**. Sulla stessa domanda le due risposte differiscono — elenco puntato contro una frase unica — mentre le fonti sono **le stesse tre, con gli stessi punteggi** (p. 3 0,6153 · p. 2 0,5342 · p. 1 0,4539): la differenza viene dal prompt e da nient'altro |
 | **CA-8** | Un PDF corrotto o solo immagine va in *fallito* con motivo | Caricare un PDF di sole immagini, poi `GET /api/documents/{id}/` | **Superato:** `202` e poi `failed` con `error_message` leggibile (P5, con `curl` vero). **Ripetuto in T-42** su un PDF di sola immagine generato per la prova: `202`, poi `failed` con «Nessun testo estraibile dalle 1 pagine del documento. E' probabilmente una scansione senza OCR: …». Il sistema non ne è compromesso — la domanda successiva ha risposto `200` con le sue tre fonti. Coperto dai due casi di `test_un_pdf_non_indicizzabile_…`. **Nell'admin:** la changelist mostra «solo-immagine.pdf · Fallito · 0 · 0» e la pagina di dettaglio porta il motivo per esteso; anche qui è HTML servito dal `runserver` su sessione autenticata, **non** una pagina guardata in un browser |
 | **CA-9** | Nessuna chiamata di rete verso servizi terzi | `.\scripts\prova-rete-staccata.ps1 -Utente <u> -Password <p>` a interfacce disattivate: si conduce da solo — a rete staccata nessuno può guidarlo da fuori — e lascia un verbale in `esiti-t43\` (ARCHITECTURE §9) | **Superato il 26/07/2026, ore 12:48** (T-43). Wi-Fi disattivata, Ethernet e Bluetooth già scollegate, **Tailscale disinstallato** perché un tunnel VPN attivo è un percorso di uscita; «Up» la sola `vEthernet (WSL)`, interna. Che l'esterno fosse irraggiungibile è **misurato**, e sui servizi che RNF-01 nomina: `api.smith.langchain.com`, `pypi.org` e gli host dei provider esclusi → *No such host is known*; `1.1.1.1:443`, provato **per indirizzo e non per nome**, → host unreachable; DNS in timeout. Mentre `127.0.0.1:5434` e `127.0.0.1:11434` rispondevano. Ciclo completo su un PDF **mai indicizzato prima**: 202 in 1,01 s, `indexed` in 4,07 s, risposta corretta con 4 fonti in 4,07 s, non-risposta sulla domanda fuori tema. **I tempi non differiscono da quelli a rete attiva** (0,95 / 7,50 / 13,53 in T-42), ed è questo l'argomento: una chiamata remota avrebbe atteso un timeout. Nei log, **tutte e dodici** le richieste HTTP dei due processi vanno a `localhost:11434` — 4 `/api/embed` dal worker, 2 `/api/tags`, 3 `/api/embed` e 3 `/api/chat` dal server: non l'assenza di traffico sospetto, ma l'elenco completo di quello che c'è stato |
-| **CA-10** | La suite di test passa | `docker compose up -d db` e poi `pytest` | **Superato:** **29 passed in 10,44 s**, e **29 passed in 10,39 s** con `OLLAMA_BASE_URL` puntato su una porta chiusa. **Ripetuto in T-42** sul virtualenv appena ricostruito — **29 passed in 7,52 s** — che è anche la prova che `pytest` e `pytest-django` stanno davvero in `requirements.txt` e non solo nell'ambiente di sviluppo precedente |
+| **CA-10** | La suite di test passa | `docker compose up -d db` e poi `pytest` | **Superato:** **29 passed in 10,44 s**, e **29 passed in 10,39 s** con `OLLAMA_BASE_URL` puntato su una porta chiusa. **Ripetuto in T-42** sul virtualenv appena ricostruito — **29 passed in 7,52 s** — che è anche la prova che `pytest` e `pytest-django` stanno davvero in `requirements.txt` e non solo nell'ambiente di sviluppo precedente. Da T-44 la suite è di **45 test**, verdi anche con `OLLAMA_BASE_URL` su una porta chiusa; il tempo complessivo non è stato ricronometrato e non se ne riporta uno |
 
 > **CA-4: quale meccanismo lo regge davvero.** Il criterio è soddisfatto, ma
 > l'origine della non-risposta va detta, perché chi valuta la scoprirebbe da sé.
@@ -521,6 +621,18 @@ funzionalità presente ma non funzionante.
 **API e interfaccia**
 
 - **Nessuna paginazione su `GET /api/documents/`**: l'elenco torna intero.
+- **Con `max_page_count` attivo la `POST` scopre anche i file corrotti, ed è un
+  cambio di contratto.** Per contare le pagine deve aprire il PDF, quindi un file
+  illeggibile riceve **400** invece di essere accettato con 202 e marcato
+  *fallito* dal worker, come questo README documenta poco sopra («non esiste un
+  422»). Il contratto predefinito è invariato, perché il limite nasce a 0 e
+  finché è 0 il PDF non viene nemmeno aperto: il cambio si attiva scegliendo il
+  limite dall'admin, e chi lo sceglie deve saperlo.
+- **I [limiti di ammissione](#limiti-di-ammissione-dei-pdf) non sono stati
+  percorsi end-to-end.** Sono verificati dai test e da `manage.py ingest` con un
+  limite attivo; il ciclo per via HTTP con worker e Ollama veri, e il rifiuto
+  dall'admin guardato in un browser, restano **da fare** — per questo di quel
+  percorso non si riporta alcun tempo.
 - **Basic auth su HTTP.** Adeguato a un uso locale; fuori da locale richiederebbe
   TLS. Non si usa `rest_framework.authtoken` perché porterebbe quattro migrazioni
   e una tabella di token che in questa prova nessuno emette né ruota.
@@ -553,11 +665,16 @@ funzionalità presente ma non funzionante.
   un worker duplicato.
 - **PDF scansionati non supportati.** PyMuPDF estrae testo, non fa OCR: il caso è
   rilevato e segnalato con un errore esplicito, non produce un documento vuoto.
+  Le scansioni **parziali** — poche pagine con testo su molte senza — hanno da
+  T-44 un controllo dedicato, `min_text_page_ratio`, spento in configurazione
+  predefinita.
 
 **Fuori scope, dichiarato**
 
-Interfaccia utente (esclusa dalla traccia), formati diversi dal PDF, OCR, memoria
-conversazionale multi-turno, ricerca ibrida BM25 + vettoriale, reranking,
+Interfaccia utente oltre alle quattro rotte dell'[interfaccia
+web](#interfaccia-web) — la traccia non ne chiede alcuna —, formati diversi dal
+PDF, OCR, memoria conversazionale multi-turno, ricerca ibrida BM25 + vettoriale,
+reranking,
 streaming SSE, multi-tenancy e ACL a livello di segmento, deployment in
 produzione. Elenco completo in [REQUIREMENTS.md §8](REQUIREMENTS.md) e
 [ARCHITECTURE.md §10](ARCHITECTURE.md).
