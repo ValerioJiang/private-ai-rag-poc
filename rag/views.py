@@ -12,12 +12,13 @@ import logging
 import httpx
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.views import LoginView
 from django.db import connection
-from django.shortcuts import render
+from django.shortcuts import redirect, render, resolve_url
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.response import Response
 
 from .models import Document, KnowledgeBase, RagPipeline
@@ -310,9 +311,43 @@ def documento(request, pk: int):
     return Response(DocumentSerializer(istanza).data)
 
 
-@api_view(["POST"])
+class SoloLaRispostaRichiedeSessione(BasePermission):
+    """Lascia passare il GET di /api/ask/, che non risponde a domande.
+
+    Serve perche' il GET e' un semplice rimando a /chiedi/ e non espone nulla:
+    ne' documenti, ne' risposte, ne' l'elenco delle configurazioni. Col
+    permesso predefinito (IsAuthenticated) chi apre /api/ask/ col browser senza
+    sessione riceve un 401 in JSON — corretto per un client di un'API,
+    illeggibile per una persona, e per giunta un vicolo cieco: la pagina che
+    gli serve esiste, ed e' a un rimando di distanza.
+
+    Il POST resta autenticato come prima, ed e' l'unico verbo che raggiunge
+    rispondi(). /chiedi/ ha una sua login_required, quindi chi non ha sessione
+    finisce sul login dell'admin invece che su un errore: e' la via d'uscita
+    che il 401 non offriva.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        if request.method == "GET":
+            return True
+        return bool(request.user and request.user.is_authenticated)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([SoloLaRispostaRichiedeSessione])
 def ask(request):
     """POST /api/ask/ — risponde citando le fonti (T-30, RF-11 → RF-16, RF-27).
+
+    IL GET NON RISPONDE A DOMANDE: rimanda a /chiedi/, e serve solo a chi
+    arriva qui col browser. Prima restituiva 405 «Method Not Allowed» — corretto
+    per un endpoint di sola scrittura, ma chi apre /api/ask/ perche' l'ha letto
+    nel README trova un errore invece di una via d'uscita, e non ha modo di
+    sapere che la pagina esiste. Il rimando e' 302 e non un contenuto: cosi'
+    l'endpoint resta uno solo, e l'HTML continua a stare in una vista sola.
+
+    Il contratto per i client resta INVARIATO: la risposta si ottiene con POST,
+    e nessuna verifica esistente osservava il 405 (accertato con grep su
+    rag/tests/ e sul README prima di cambiarlo).
 
     E' un involucro attorno a rispondi(): recupero, soglia, non-risposta, fonti
     e storico stanno gia' nel servizio, e questa vista non ne rifa' nemmeno una
@@ -337,6 +372,9 @@ def ask(request):
     sara' mai raggiunta. Invertirle non romperebbe nessuna verifica scritta con
     domande pertinenti.
     """
+    if request.method == "GET":
+        return redirect("chiedi")
+
     dati = AskSerializer(data=request.data)
     dati.is_valid(raise_exception=True)
 
@@ -378,6 +416,58 @@ def pipelines(request):
         "knowledge_base", "llm_profile", "retrieval_profile", "prompt_template"
     ).order_by("-is_default", "name")
     return Response(RagPipelineSerializer(qs, many=True).data)
+
+
+class Accesso(LoginView):
+    """GET/POST /accedi/ — la porta d'ingresso, con smistamento per ruolo.
+
+    Prima di questa vista LOGIN_URL puntava ad `admin:login`, e la conseguenza
+    non era voluta: AdminAuthenticationForm rifiuta chi non ha `is_staff`,
+    quindi un utente ordinario NON aveva modo di entrare — nemmeno per
+    raggiungere /chiedi/, che e' fatta per lui. Non c'era una decisione dietro:
+    mancava una porta che non fosse quella dell'amministrazione.
+
+    LO SMISTAMENTO E' INSTRADAMENTO, NON AUTORIZZAZIONE. Qui si decide soltanto
+    su quale pagina si atterra: chi amministra nel pannello di gestione, gli
+    altri sull'interrogazione. Nessuno guadagna un permesso che non aveva —
+    l'admin continua a difendersi da se', e un utente ordinario che digitasse
+    /admin/ verrebbe respinto da Django come prima.
+
+    get_default_redirect_url() e non get_success_url(): la seconda decide anche
+    quando c'e' un `next`, e sovrascriverla farebbe perdere la pagina che
+    l'utente aveva chiesto prima di essere mandato al login. Il ramo per ruolo
+    e' il RIPIEGO, cioe' il caso in cui nessuno ha espresso una destinazione.
+
+    `is_staff` e non `is_superuser`: e' lo stesso discriminante che Django usa
+    per decidere chi entra nell'admin, e usarne un altro creerebbe la categoria
+    di chi viene smistato in un posto che poi lo respinge.
+    """
+
+    template_name = "registration/login.html"
+    # Chi ha gia' una sessione non ha nulla da fare qui: lo si porta dove
+    # sarebbe finito comunque, invece di mostrargli un modulo da riempire.
+    redirect_authenticated_user = True
+
+    def get_default_redirect_url(self) -> str:
+        return resolve_url("admin:index" if self.request.user.is_staff else "chiedi")
+
+
+def radice(request):
+    """GET / — smista e non rende nulla.
+
+    La radice non era instradata, e l'admin ci mandava «Visualizza sito» su un
+    404: e' il motivo per cui config/urls.py aveva azzerato `site_url`. Ora
+    esiste una destinazione sensata per ciascuno, e la radice e' il posto in cui
+    dirlo una volta sola — chi apre l'indirizzo del server senza sapere quali
+    rotte esistano non deve indovinare `/chiedi/`.
+
+    Uno `redirect` e non una pagina di scelta: una schermata che chiede «dove
+    vuoi andare?» a chi ha gia' un ruolo e' una domanda di cui il sistema
+    conosce gia' la risposta.
+    """
+    if not request.user.is_authenticated:
+        return redirect("accedi")
+    return redirect("admin:index" if request.user.is_staff else "chiedi")
 
 
 @login_required

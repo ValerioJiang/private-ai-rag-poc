@@ -1,9 +1,19 @@
 # Architettura in breve
 
-Panoramica in una pagina, pensata per chi apre il progetto la prima volta.
-La versione completa — alternative valutate, misure, limiti dichiarati — è in
+Panoramica per chi apre il progetto la prima volta. La versione completa —
+alternative valutate, misure, limiti dichiarati — è in
 [ARCHITECTURE.md](ARCHITECTURE.md); qui non si trova nulla che là non ci sia già,
 solo detto in meno parole.
+
+**Non serve leggerlo tutto.**
+
+| Sezioni | Cosa ci trovi | Quando servono |
+|---|---|---|
+| **§1–§2** | Cosa fa il sistema e di quali pezzi è fatto | sempre: sono i primi cinque minuti |
+| **§3–§4** | I due flussi: carico un PDF, faccio una domanda | sempre |
+| **§5–§7** | La configurazione come tabella, la mappa dei file, le due metà del database | prima di mettere mano al codice |
+| **§8–§9** | Le dieci scelte e i due modelli, con le alternative scartate | quando serve rispondere a un «perché non…?» |
+| **§10–§11** | I limiti dichiarati, e le tre cose da ricordare | prima di fidarsi del sistema |
 
 ---
 
@@ -305,29 +315,55 @@ prezzo per poter ispezionare e citare i segmenti con l'ORM normale, nell'admin.
 
 ## 8. Le scelte, e cosa costano
 
-Ogni riga è una decisione presa consapevolmente, con un'alternativa scartata e un
-prezzo pagato. Il dettaglio — tutte le alternative valutate, non solo la
-principale — è in `ARCHITECTURE.md` §7, indicato nell'ultima colonna.
+Dieci decisioni, ciascuna con le alternative che sono state valutate e scartate.
+Prima il quadro d'insieme, poi il confronto opzione per opzione **nello stesso
+ordine**, che è quello del sistema: si ingerisce (8.1–8.3), si conserva
+(8.4–8.5), si interroga (8.6–8.7), si governa (8.8–8.10). Il dettaglio esteso —
+misure sul campo, versioni verificate, piani di ripiego — resta in
+`ARCHITECTURE.md` §7, indicato nell'ultima colonna.
+
+### Il quadro d'insieme
 
 | Decisione | Scelto | Perché | Il prezzo |
 |---|---|---|---|
-| **Chi genera** | **Ollama** | Si installa con un comando, gestisce i modelli da sé, cambiare modello = cambiare una stringa nell'admin | Più lento di vLLM, batching limitato, non pensato per molte richieste insieme (§7.1) |
-| **Dove stanno i vettori** | **pgvector** | Un solo datastore da avviare e da salvare; filtri sui metadata in SQL | Su milioni di vettori un motore dedicato sarebbe più veloce (§7.2) |
-| **Chi calcola gli embedding** | **`bge-m3` su Ollama** | Ottimo multilingua (i PDF sono in italiano) e soprattutto **stesso servizio dell'LLM**: il progetto resta libero da torch, ~2,5 GB di dipendenze risparmiati | 1024 dimensioni = indice più pesante; ~1,2 GB di VRAM condivisi con il modello che genera (§7.3) |
-| **Come si tagliano i PDF** | **Recursive character** | Rispetta i confini di paragrafo e frase, nessuna dipendenza in più | Ignora la struttura del documento: tabelle e testo a colonne vengono tagliati male (§7.4) |
-| **Come si estrae il testo** | **PyMuPDF diretto** | ~10 righe di codice e **zero dipendenze aggiuntive** | Il loader è nostro, quindi da testare noi. Il `PyMuPDFLoader` di LangChain avrebbe trascinato sei pacchetti per dieci righe (§7.10) |
-| **Come si accede ai vettori** | **`langchain_postgres.PGVector`** | Similarity, MMR e soglia già pronti: la traccia premia la configurabilità del recupero | **Due ORM e due driver** verso lo stesso database, due tabelle fuori dalle migrazioni, testo duplicato. Libreria ferma alla 0.0.17 (§7.9) |
-| **Come si lavora in background** | **`django-tasks` + backend DB** | La coda vive in Postgres: nessun servizio in più. E l'API è agnostica — passare a Celery sarebbe una riga di `settings.TASKS` | Il worker fa polling (latenza di partenza ~1 s); due pacchetti e 19 migrazioni in più (§7.5) |
-| **Dove vive la configurazione** | **Modelli Django** | Admin nativo, validazione, relazioni, storico nelle migrazioni | Più codice iniziale di una libreria di flag (§7.6) |
-| **Come si recupera** | **Similarity** (default), **MMR** e **soglia** disponibili | Baseline prevedibile, con due alternative selezionabili dall'admin | Niente ricerca ibrida BM25 né reranker: sarebbero meglio su sigle e nomi propri, ma sono fuori scope (§7.7) |
-| **Come si osserva** | **`QueryLog` nell'admin** | Zero infrastruttura, e sta dove la traccia chiede che il sistema sia governabile | Nessun tracing per singolo passo, nessun conteggio dei token, UI spartana. Langfuse costerebbe **sei container** (§7.8) |
+| **8.1 · Come si estrae il testo** | **PyMuPDF diretto** | ~10 righe di codice e **zero dipendenze aggiuntive** | Il loader è nostro, quindi da testare noi. Il `PyMuPDFLoader` di LangChain avrebbe trascinato sei pacchetti per dieci righe (§7.10) |
+| **8.2 · Come si tagliano i PDF** | **Recursive character** | Rispetta i confini di paragrafo e frase, nessuna dipendenza in più | Ignora la struttura del documento: tabelle e testo a colonne vengono tagliati male (§7.4) |
+| **8.3 · Chi calcola gli embedding** | **`bge-m3` su Ollama** | Ottimo multilingua (i PDF sono in italiano) e soprattutto **stesso servizio dell'LLM**: il progetto resta libero da torch, ~2,5 GB di dipendenze risparmiati | 1024 dimensioni = indice più pesante; ~1,2 GB di VRAM condivisi con il modello che genera (§7.3) |
+| **8.4 · Dove stanno i vettori** | **pgvector** | Un solo datastore da avviare e da salvare; filtri sui metadata in SQL | Su milioni di vettori un motore dedicato sarebbe più veloce (§7.2) |
+| **8.5 · Come si accede ai vettori** | **`langchain_postgres.PGVector`** | Similarity, MMR e soglia già pronti: la traccia premia la configurabilità del recupero | **Due ORM e due driver** verso lo stesso database, due tabelle fuori dalle migrazioni, testo duplicato. Libreria ferma alla 0.0.17 (§7.9) |
+| **8.6 · Come si recupera** | **Similarity** (default), **MMR** e **soglia** disponibili | Baseline prevedibile, con due alternative selezionabili dall'admin | Niente ricerca ibrida BM25 né reranker: sarebbero meglio su sigle e nomi propri, ma sono fuori scope (§7.7) |
+| **8.7 · Chi genera** | **Ollama** | Si installa con un comando, gestisce i modelli da sé, cambiare modello = cambiare una stringa nell'admin | Più lento di vLLM, batching limitato, non pensato per molte richieste insieme (§7.1) |
+| **8.8 · Come si lavora in background** | **`django-tasks` + backend DB** | La coda vive in Postgres: nessun servizio in più. E l'API è agnostica — passare a Celery sarebbe una riga di `settings.TASKS` | Il worker fa polling (latenza di partenza ~1 s); due pacchetti e 19 migrazioni in più (§7.5) |
+| **8.9 · Dove vive la configurazione** | **Modelli Django** | Admin nativo, validazione, relazioni, storico nelle migrazioni | Più codice iniziale di una libreria di flag (§7.6) |
+| **8.10 · Come si osserva** | **`QueryLog` nell'admin** | Zero infrastruttura, e sta dove la traccia chiede che il sistema sia governabile | Nessun tracing per singolo passo, nessun conteggio dei token, UI spartana. Langfuse costerebbe **sei container** (§7.8) |
 
-### Una scelta che ora ha evidenza, non solo un argomento
+Nelle tabelle che seguono **✅ segna l'opzione adottata**.
 
-Il taglio dei PDF era motivato per proporzione fra costo e beneficio: il
-**semantic chunking** — far decidere i confini a un modello di embedding —
-prometteva un recupero migliore a un costo di ingestione molto più alto, e non è
-stato realizzato. Dal 2025 quel guadagno è stato misurato da altri:
+### Ingestione — dal PDF ai vettori
+
+#### 8.1 Come si estrae il testo dal PDF
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **PyMuPDF diretto** ✅ | ~10 righe per produrre documenti col numero di pagina nei metadata; controllo totale sul rilevamento del PDF senza testo; **zero dipendenze aggiuntive** | Il codice del loader è nostro, quindi da testare noi |
+| `PyMuPDFLoader` di LangChain | Poche righe in meno, metadata già popolati | Trascina `langchain-community` e con essa `aiohttp`, `requests`, `pydantic-settings`, `tenacity`: **sei pacchetti per dieci righe** |
+
+**Scelto perché:** proporzione fra beneficio e peso, e nient'altro — il loader di LangChain funzionerebbe benissimo.
+
+#### 8.2 Come si tagliano i PDF
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **Recursive character** ✅ | Rispetta i confini di paragrafo e frase; nessuna dipendenza extra | Ignora la struttura del documento: tabelle e testo a colonne vengono tagliati male |
+| Basato su token | Allineato alla finestra di contesto, dimensioni prevedibili | Richiede un tokenizer coerente col modello. **Esposto nell'admin ma rifiutato**: `tiktoken` implementa i BPE di OpenAI, e misurare con quello i segmenti di `qwen2.5` darebbe un conteggio plausibile e falso |
+| Semantic chunking | Segmenti coerenti per significato | Costo di embedding all'ingestione molto più alto — e il guadagno **non è confermato** (sotto) |
+| Layout-aware (`unstructured`) | Gestisce tabelle e layout multicolonna | Dipendenze pesanti (OCR, poppler), ingestione lenta |
+
+**Scelto perché:** su prosa documentale è la baseline che regge, e il taglio cieco a lunghezza fissa resta l'*ultima* risorsa dello splitter, non la prima.
+
+**L'evidenza pubblicata.** Il semantic chunking non è nell'enum: è stato valutato
+e lasciato fuori, con un argomento di proporzione fra costo e beneficio. Dal 2025
+quel guadagno è stato misurato da altri:
 
 | Fonte | Esito |
 |---|---|
@@ -344,6 +380,106 @@ economica.
 La conclusione difendibile è **«dipende dal dominio; per prosa documentale, il
 ricorsivo»**. Il dettaglio delle fonti, con le riserve su quali sono state
 verificate su fonte primaria e quali no, è in `ARCHITECTURE.md` §7.4.
+
+#### 8.3 Chi calcola gli embedding
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **`bge-m3` via Ollama** ✅ | Multilingua di prima fascia (i PDF sono in italiano); **stesso servizio dell'LLM**, quindi nessuna dipendenza da torch (~2,5 GB risparmiati); nessun caricamento dentro il processo web | 1024 dimensioni: indice più pesante; ~1,2 GB di VRAM condivisi col modello che genera |
+| `multilingual-e5-small` (HuggingFace) | Buon multilingua, 384 dimensioni = indice compatto | Gira **in-process** via sentence-transformers: torch fra le dipendenze, memoria duplicata per ogni worker |
+| `nomic-embed-text` via Ollama | Stesso servizio dell'LLM, 768 dimensioni | Prevalentemente inglese: degraderebbe il recupero su documenti italiani |
+| Embedding cloud (OpenAI, Cohere) | Qualità superiore, nessun costo computazionale locale | Il testo dei documenti uscirebbe dal perimetro. **Contraddice il requisito** |
+
+**Scelto perché:** non per qualità pura — `e5-small` era adeguato — ma perché passare da Ollama tiene l'intero progetto libero da torch e concentra l'inferenza in un servizio solo.
+
+### Persistenza — dove i vettori finiscono, e chi li interroga
+
+#### 8.4 Dove stanno i vettori
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **pgvector** ✅ | Un solo datastore da avviare e da salvare; filtri sui metadata in SQL; un solo backup | Dimensione del vettore fissata nello schema; su milioni di vettori un motore dedicato è più veloce |
+| Chroma | Zero infrastruttura, ideale per prototipi | Persistenza separata dal database → rischio di disallineamento; meno maturo |
+| FAISS | Ricerca velocissima | In memoria: nessuna persistenza dei metadata, nessun filtro, reindicizzazione a ogni avvio |
+| Qdrant | Filtri potenti, prodotto eccellente | Un servizio in più senza un vantaggio concreto a questa scala |
+
+**Scelto perché:** il criterio vero è stato *quanti servizi deve avviare chi valuta il progetto*. Con pgvector, uno.
+
+#### 8.5 Come si accede ai vettori
+
+Scelto pgvector, resta una seconda decisione che spesso si dà per scontata: **chi
+scrive le query vettoriali**.
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **`langchain_postgres.PGVector`** ✅ | Similarity, MMR e soglia già pronti; integrazione diretta con LangChain; nessuna query SQL scritta a mano | Possiede due tabelle fuori dalle migrazioni Django; impone la duplicazione del testo; ferma alla **0.0.17**; trascina SQLAlchemy e un secondo driver — **due ORM verso lo stesso database** |
+| Retriever proprio sull'ORM di Django | **Uno schema solo**, tutto sotto migrazioni; nessuna duplicazione del testo; un solo ORM e un solo driver | MMR, `fetch_k` e `score_threshold` da realizzare a mano; più codice da testare |
+
+**Scelto perché:** la traccia premia la configurabilità del *recupero*, e avere MMR e soglia già pronti vale più dell'eleganza dello schema. Il piano di ripiego è dichiarato: il retriever proprio costa circa mezza giornata e degrada il solo MMR.
+
+### Interrogazione — dalla domanda alla risposta
+
+#### 8.6 Come si recupera
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **Similarity** ✅ *(predefinita)* | Baseline solida e prevedibile | Può restituire segmenti quasi identici |
+| **MMR** ✅ *(selezionabile)* | Diversifica i risultati, utile su PDF ripetitivi | Due parametri in più da tarare (`fetch_k`, `lambda_mult`) |
+| **Similarity + soglia** ✅ *(selezionabile)* | È l'unico ramo in cui `score_threshold` filtra davvero | Il filtro agisce **dopo** il `top_k`: con `top_k=4` e soglia alta si possono avere zero risultati |
+| Ibrido BM25 + vettoriale | Molto meglio su codici, sigle, nomi propri | Richiede un indice full-text parallelo. **Fuori ambito** |
+| Reranker cross-encoder | Miglioramento netto della precisione | Raddoppia la latenza, un modello in più da servire. **Fuori ambito** |
+
+**Scelto perché:** tre strategie realizzate e selezionabili dall'admin coprono il confronto che la traccia chiede di poter fare. La soglia predefinita **0,5** non è a occhio: cade nell'intervallo vuoto fra le rilevanze misurate sul corpus di prova (0,68–0,73 pertinenti; 0,15–0,26 fuori tema).
+
+#### 8.7 Chi genera le risposte
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **Ollama** ✅ | Installazione in un comando; gestione dei modelli integrata; cambiare modello = cambiare una stringa nell'admin | Overhead superiore a vLLM; batching limitato; non pensato per alta concorrenza |
+| vLLM | Throughput elevato, *continuous batching*, API compatibile OpenAI | Configurazione CUDA delicata, immagine pesante; sovradimensionato per una prova |
+| llama.cpp / llama-server | Leggerissimo, ottimo su CPU, modelli GGUF quantizzati | Gestione dei modelli manuale, integrazione meno curata |
+| `transformers` in-process | Nessun servizio esterno da avviare | Il modello vive **dentro** il processo Django: memoria enorme, ricaricamento lentissimo, incompatibile con più worker |
+| LM Studio | Ottima interfaccia grafica | Non scriptabile né containerizzabile |
+
+**Scelto perché:** è l'unico che rende il modello un *parametro*. Cambiarlo dall'admin senza toccare il codice è il requisito centrale della traccia, e con Ollama costa una stringa.
+
+### Impianto — come il sistema si governa
+
+#### 8.8 Come si lavora in background
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **`django-tasks` + backend database** ✅ | API **agnostica rispetto al backend**, identica a quella entrata nella stdlib con Django 6; la coda vive in Postgres, nessun servizio in più | Il worker fa polling; niente retry ricchi nell'API; **due** pacchetti e 19 migrazioni in più |
+| Celery + Redis | Standard di fatto, retry, monitoraggio maturo | Un servizio con stato in più: **Postgres non è un broker supportato**, quindi Redis diventa obbligatorio |
+| procrastinate | Nativo Postgres con `LISTEN/NOTIFY`: nessun polling, locking solido | Meno diffuso, API propria non agnostica |
+| django-q2 | Usa l'ORM come broker, semplice | Ecosistema più piccolo, superato in prospettiva da `django.tasks` |
+| Sincrono nella richiesta | Semplicissimo | Timeout HTTP su PDF di centinaia di pagine |
+| `threading.Thread` | Nessuna dipendenza | Nessuna durabilità: un riavvio perde il lavoro |
+
+**Scelto perché:** il vantaggio decisivo non è risparmiare un container, ma che l'API è disaccoppiata dalla coda — passare a Celery sarebbe una riga di `settings.TASKS`, non una riscrittura. È la tesi del progetto (il comportamento è configurazione) estesa alle code.
+
+#### 8.9 Dove vive la configurazione
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **Modelli Django** ✅ | Admin nativo, validazione in `clean()`, relazioni, storico via migrazioni | Più codice iniziale |
+| django-constance | Rapidissimo per flag globali | Coppie chiave/valore piatte: niente profili multipli, niente relazioni |
+| `settings.py` o variabili d'ambiente | Semplice, versionato | Richiede riavvio e accesso al codice. **Contraddice il requisito** |
+| Un unico `JSONField` | Massima flessibilità | Nessuna validazione, nessuna interfaccia decente |
+
+**Scelto perché:** è l'unica opzione in cui «più configurazioni complete che coesistono e si confrontano» (RF-23) è una cosa che lo schema sa esprimere.
+
+#### 8.10 Come si osserva il sistema
+
+| Opzione | Pro | Contro |
+|---|---|---|
+| **`QueryLog` + `RetrievedChunk` nativi** ✅ | Zero infrastruttura; visibili **nell'admin**, cioè dove la traccia chiede che il sistema sia governabile; interrogabili con l'ORM | Nessun tracing per singolo passo; nessun conteggio dei token; interfaccia spartana |
+| Langfuse self-hosted | Tracing per passo, conteggio token, valutazioni; interamente installabile nel perimetro | **Sei container**, minimo raccomandato 4 vCPU e 8 GB di RAM — accanto a un modello 7B su GPU |
+| Langfuse cloud | Nessuna infrastruttura da gestire | Le tracce contengono il prompt completo, quindi i segmenti estratti dai PDF: **contraddice la premessa** |
+| Arize Phoenix | Container singolo, valutazioni RAG native | Un servizio comunque in più |
+| OpenTelemetry puro | Leggerissimo, esporta verso qualunque backend | Richiede un backend di raccolta per essere utile |
+
+**Scelto perché:** l'osservabilità doveva stare dove sta il governo del sistema. Resta un punto di aggancio per Langfuse dietro un flag, spento di default — e anche acceso, la sua gestione dei prompt resterebbe **inutilizzata**: i prompt devono vivere in `PromptTemplate`, o si svuota il requisito centrale.
 
 ### Le tre scelte che sorprendono
 

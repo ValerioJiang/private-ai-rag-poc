@@ -1,0 +1,92 @@
+{% comment %}
+Accesso al sistema, con smistamento per ruolo (vedi rag.views.Accesso).
+
+Perche' esiste, dato che l'admin un login ce l'ha gia'. Quello di Django e' il
+login DELL'ADMIN: AdminAuthenticationForm rifiuta chi non ha is_staff, con un
+messaggio che parla di permessi sul sito d'amministrazione. Finche' LOGIN_URL
+puntava li', un utente senza staff non aveva alcun modo di entrare — nemmeno
+per raggiungere /chiedi/, che pure e' fatta per lui. Non era una restrizione
+voluta: era il riflesso di non avere una porta d'ingresso propria.
+
+Questa la e', e non duplica alcuna regola: autentica LoginView di Django, con
+il suo AuthenticationForm. Cambia solo dove si arriva dopo, che e' una
+questione di instradamento e non di autorizzazione — chi non ha is_staff non
+guadagna qui alcun accesso all'admin, che continua a difendersi da se'.
+
+Il tema sta in rag/_tema.html, incluso e non copiato: l'intestazione di quel
+file spiega perche'.
+{% endcomment %}<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accesso</title>
+{% include "rag/_tema.html" %}
+<style>
+  body {
+    min-height: 100vh; padding: 1.5rem;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .riquadro { width: 100%; max-width: 23rem; }
+  h1 { font-size: 1.3rem; }
+  .sottotitolo { margin-bottom: 1.5rem; }
+  form.accesso { padding: 1.4rem; }
+  button.primario { width: 100%; margin-top: .3rem; }
+  .avvisi {
+    background: var(--errore-sfondo); border-left: 3px solid var(--errore);
+    border-radius: 6px; padding: .7rem .9rem; margin-bottom: 1.2rem;
+    color: var(--errore); font-size: .88rem;
+  }
+  .avvisi ul { margin: 0; padding-left: 1.1rem; }
+  .nota { color: var(--tenue); font-size: .8rem; margin-top: 1.2rem; text-align: center; }
+</style>
+</head>
+<body>
+<div class="riquadro">
+
+  <h1>Interrogazione documentale</h1>
+  <p class="sottotitolo">
+    Generazione ed embedding restano su questa macchina: nessun documento
+    lascia il sistema.
+  </p>
+
+  <form method="post" class="carta accesso">
+    {% csrf_token %}
+
+    {% if form.errors %}
+      {# I messaggi di LoginView: credenziali errate, utenza disattivata. #}
+      <div class="avvisi">
+        <ul>
+          {% for errore in form.non_field_errors %}<li>{{ errore }}</li>{% endfor %}
+          {% for campo in form %}
+            {% for errore in campo.errors %}<li>{{ campo.label }}: {{ errore }}</li>{% endfor %}
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    <div class="riga">
+      <label for="{{ form.username.id_for_label }}">Nome utente</label>
+      {{ form.username }}
+    </div>
+
+    <div class="riga">
+      <label for="{{ form.password.id_for_label }}">Password</label>
+      {{ form.password }}
+    </div>
+
+    {# Il `next` va conservato, o chi arriva da una pagina protetta viene
+       smistato per ruolo e perde la pagina che stava chiedendo. #}
+    <input type="hidden" name="next" value="{{ next }}">
+
+    <button type="submit" class="primario">Accedi</button>
+  </form>
+
+  <p class="nota">
+    Chi amministra entra nel pannello di gestione; agli altri si apre la pagina
+    di interrogazione.
+  </p>
+
+</div>
+</body>
+</html>

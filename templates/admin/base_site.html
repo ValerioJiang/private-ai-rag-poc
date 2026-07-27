@@ -1,0 +1,100 @@
+{% extends "admin/base.html" %}
+{% comment %}
+L'admin nella stessa tavolozza delle due pagine HTML del progetto.
+
+ESTENDE admin/base.html E NON admin/base_site.html, che e' il file che questo
+sostituisce: `{% templatetag openblock %} extends "admin/base_site.html"
+{% templatetag closeblock %}` da qui dentro si risolverebbe su se' stesso —
+DIRS viene prima di APP_DIRS — e ricorrerebbe all'infinito. I tre blocchi
+dell'originale sono percio' ricopiati sotto, invariati.
+
+Perche' solo variabili, e non un foglio di stile. L'admin di Django dichiara i
+propri colori come custom properties su :root (`--primary`, `--header-bg`,
+`--link-fg`, ...) e li usa dappertutto: ridefinirle e' il punto piu' piccolo da
+cui l'intero pannello cambia aspetto, e non tocca una sola regola di layout.
+Riscrivere selettori dell'admin sarebbe invece codice che si rompe alla
+prossima versione di Django, per un guadagno estetico.
+
+Il tema scuro resta quello dell'admin, con le stesse sostituzioni: Django lo
+gestisce gia' via prefers-color-scheme, e sovrapporgli un secondo meccanismo
+darebbe due sorgenti di verita' per la stessa domanda.
+
+I VALORI SONO GLI STESSI di templates/rag/_tema.html, ma qui vanno scritti a
+mano: le custom properties dell'admin hanno nomi loro, e includere quel
+frammento porterebbe con se' anche le regole sugli elementi, che l'admin ha
+gia' e diverse. E' duplicazione di una tavolozza, dichiarata, contro
+l'alternativa di riscrivere il foglio dell'admin.
+{% endcomment %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block nav-global %}{% endblock %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  :root {
+    --primary: #2f5d50;
+    --secondary: #2f5d50;
+    --accent: #7fc0a9;
+    --primary-fg: #f4f4f1;
+
+    --header-color: #cfe3da;
+    --header-branding-color: #f4f4f1;
+    --header-bg: #2f5d50;
+    --header-link-color: #f4f4f1;
+
+    --breadcrumbs-fg: #cfe3da;
+    --breadcrumbs-link-fg: #f4f4f1;
+    --breadcrumbs-bg: #274c42;
+
+    --link-fg: #2f5d50;
+    --link-hover-color: #1f4038;
+    --link-selected-fg: #24483e;
+
+    --button-bg: #2f5d50;
+    --button-hover-bg: #24483e;
+    --default-button-bg: #2f5d50;
+    --default-button-hover-bg: #24483e;
+
+    --object-tools-bg: #4a4a45;
+    --object-tools-hover-bg: #2f5d50;
+
+    --selected-row: #e4efea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --primary: #7fc0a9;
+      --secondary: #1f2c27;
+      --accent: #7fc0a9;
+      --primary-fg: #121311;
+
+      --header-color: #b9d8cc;
+      --header-branding-color: #ecece7;
+      --header-bg: #1f2c27;
+      --header-link-color: #ecece7;
+
+      --breadcrumbs-fg: #b9d8cc;
+      --breadcrumbs-link-fg: #ecece7;
+      --breadcrumbs-bg: #17211d;
+
+      --link-fg: #7fc0a9;
+      --link-hover-color: #9ed3c0;
+      --link-selected-fg: #9ed3c0;
+
+      --button-bg: #2f5d50;
+      --button-hover-bg: #3b6f60;
+      --default-button-bg: #2f5d50;
+      --default-button-hover-bg: #3b6f60;
+
+      --selected-row: #1f2c27;
+    }
+  }
+</style>
+{% endblock %}

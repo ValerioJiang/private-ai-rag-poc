@@ -106,7 +106,16 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Django è "/accounts/login/", che qui non è instradato: la pagina /chiedi/
 # rimanderebbe a un 404 invece che a un login. Il nome della rotta, non il
 # percorso: l'unico login del progetto è quello dell'admin.
-LOGIN_URL = "admin:login"
+# La porta d'ingresso e' una sola e vale per tutti (rag.views.Accesso). Puntava
+# ad `admin:login`, che pero' e' il login DELL'ADMIN: AdminAuthenticationForm
+# rifiuta chi non ha is_staff, quindi un utente ordinario non aveva modo di
+# entrare nemmeno per raggiungere /chiedi/, che e' fatta per lui.
+#
+# Non e' un parametro di comportamento del sistema RAG (RF-22): e' instradamento
+# HTTP, come DATABASES e OLLAMA_BASE_URL. Nessuna risposta cambia.
+LOGIN_URL = "accedi"
+# Dove si esce: al login, non a una pagina protetta che rimanderebbe al login.
+LOGOUT_REDIRECT_URL = "accedi"
 
 # ATTENZIONE — questa cache NON è quella degli oggetti LangChain, e il commento
 # che stava qui diceva il contrario.

@@ -4,11 +4,15 @@ from django.contrib import admin
 from django.urls import include, path
 
 # L'intestazione dell'admin mostra «Visualizza sito» con un collegamento alla
-# radice, che qui non e' instradata: le sole rotte sono `/admin/`, `/health` e
-# le quattro sotto `/api/`. Il collegamento portava quindi a un 404, e a
-# `None` il collegamento non viene proprio reso. E' cosmetica, ma in una
-# dimostrazione un link morto nell'interfaccia si legge come un guasto.
-admin.site.site_url = None
+# radice. Finche' la radice non era instradata quel collegamento portava a un
+# 404, e stava percio' a `None` — che lo fa sparire del tutto. Ora la radice
+# c'e' e smista per ruolo, ma il collegamento punta direttamente a /chiedi/:
+# per chi amministra «vedere il sito» significa vedere cio' che vede l'utente,
+# non essere rimandato all'admin da cui e' appena uscito.
+admin.site.site_url = "/chiedi/"
+admin.site.site_header = "Interrogazione documentale — gestione"
+admin.site.site_title = "Gestione"
+admin.site.index_title = "Configurazione e documenti"
 
 urlpatterns = [
     path("admin/", admin.site.urls),

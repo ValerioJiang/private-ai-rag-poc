@@ -1,5 +1,5 @@
 {% comment %}
-Interfaccia minima per POST /api/ask/ (RF-11 -> RF-16, RF-27).
+Interfaccia per POST /api/ask/ (RF-11 -> RF-16, RF-27).
 
 Perche' esiste. L'API navigabile di DRF su una vista funzionale non offre un
 form a campi: mostra una casella di testo in cui la domanda va scritta come
@@ -10,90 +10,110 @@ non duplica alcuna regola - con i due campi che il serializer accetta.
 
 Il vincolo che ne ha deciso la forma e' RNF-01: nulla esce dalla macchina.
 Niente CDN, niente font remoti, nessuna libreria: CSS e JavaScript sono qui
-dentro. Una sola <script src> verso un dominio esterno renderebbe falsa la
-prova a interfacce disattivate di T-43.
+dentro, e il tema comune arriva da rag/_tema.html, che e' incluso e quindi
+non aggiunge una richiesta. Una sola <script src> verso un dominio esterno
+renderebbe falsa la prova a interfacce disattivate di T-43.
 
 Il cronometro accanto allo spinner non e' decorazione. La prima domanda dopo
 l'avvio del server costa ~180 s, di cui ~178 di sola generazione - il modello
 che entra in VRAM, misurato in T-41 - e senza un tempo che scorre una pagina
-ferma per tre minuti si legge come bloccata. Dopo 15 secondi compare anche la
-ragione, perche' uno spinner che gira senza spiegarsi informa quanto uno fermo.
+ferma per tre minuti si legge come bloccata. L'avviso compare a 15 s, quando
+l'attesa smette di essere ordinaria, e a 45 s si fa piu' esplicito: uno
+spinner che gira senza spiegarsi informa quanto uno fermo.
 
 Nessun parametro di comportamento e' scritto qui (RF-22): le pipeline arrivano
-da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
+da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server. Le
+domande di esempio sono un'affordance dell'interfaccia, non configurazione: non
+cambiano una virgola di come il sistema risponde, servono a chi apre la pagina
+per la prima volta e non sa che cosa chiedere.
+
+La rilevanza di ogni fonte e' resa DUE volte, come barra e come cifra. La barra
+si legge in un colpo d'occhio ma non si cita in un verbale; la cifra e' quella
+che il progetto riporta nei report, con quattro decimali. Nessuna delle due e'
+ricalcolata qui: e' il punteggio che l'API restituisce.
 {% endcomment %}<!doctype html>
 <html lang="it">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Interroga la base di conoscenza</title>
+{% include "rag/_tema.html" %}
 <style>
-  :root {
-    --bordo: #d8d8d8;
-    --sfondo: #f6f6f4;
-    --carta: #ffffff;
-    --testo: #1c1c1a;
-    --tenue: #6a6a66;
-    --accento: #2f5d50;
-    --errore: #8a2a20;
+  /* Solo cio' che appartiene a QUESTA pagina: il resto sta nel tema comune. */
+  body { padding: 2.5rem 1rem 5rem; }
+  .contenitore { max-width: 54rem; margin: 0 auto; }
+
+  header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 1.5rem; flex-wrap: wrap; margin-bottom: 2rem;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    padding: 2rem 1rem 4rem;
-    background: var(--sfondo);
-    color: var(--testo);
-    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  form.interroga { padding: 1.4rem; }
+  .riga:last-of-type { margin-bottom: 0; }
+
+  /* Le domande di esempio: si clicca invece di digitare. In una dimostrazione
+     dal vivo e' la differenza fra mostrare il sistema e mostrare chi scrive. */
+  .esempi { display: flex; gap: .45rem; flex-wrap: wrap; margin-top: .6rem; }
+  .esempio {
+    font: inherit; font-size: .82rem; cursor: pointer; color: var(--tenue);
+    background: transparent; border: 1px dashed var(--bordo-marcato);
+    border-radius: 999px; padding: .3rem .75rem;
   }
-  .contenitore { max-width: 52rem; margin: 0 auto; }
-  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  .sottotitolo { color: var(--tenue); font-size: .9rem; margin: 0 0 1.5rem; }
-  .collegamenti a { color: var(--accento); font-size: .85rem; margin-left: .9rem; }
-  form { background: var(--carta); border: 1px solid var(--bordo); border-radius: 10px; padding: 1.25rem; }
-  label { display: block; font-size: .82rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--tenue); margin-bottom: .35rem; }
-  textarea, select {
-    width: 100%; padding: .7rem .8rem; font: inherit; color: inherit;
-    background: #fff; border: 1px solid var(--bordo); border-radius: 6px;
-  }
-  textarea { min-height: 5.5rem; resize: vertical; }
-  textarea:focus, select:focus { outline: 2px solid var(--accento); outline-offset: 1px; }
-  .riga { margin-bottom: 1rem; }
-  .azioni { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-  button {
-    font: inherit; font-weight: 600; padding: .6rem 1.4rem; cursor: pointer;
-    background: var(--accento); color: #fff; border: 0; border-radius: 6px;
-  }
-  button:disabled { opacity: .55; cursor: not-allowed; }
-  .scorciatoia { color: var(--tenue); font-size: .8rem; }
+  .esempio:hover { color: var(--accento); border-color: var(--accento); border-style: solid; }
+
+  .azioni { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.3rem; }
+  .scorciatoia { color: var(--tenue); font-size: .82rem; }
+
+  /* --- attesa ----------------------------------------------------------- */
+  .caricamento { display: none; align-items: center; gap: .8rem; margin-top: 1.2rem;
+                 padding-top: 1.1rem; border-top: 1px solid var(--bordo); }
+  .caricamento.attivo { display: flex; flex-wrap: wrap; }
   /* Lo spinner e' un bordo che gira: nessuna immagine da caricare. */
-  .caricamento { display: none; align-items: center; gap: .7rem; margin-top: 1rem; }
-  .caricamento.attivo { display: flex; }
   .rotella {
-    width: 1.1rem; height: 1.1rem; border: 2px solid #cfcfcf;
+    width: 1.15rem; height: 1.15rem; border: 2px solid var(--bordo-marcato);
     border-top-color: var(--accento); border-radius: 50%;
     animation: gira .8s linear infinite; flex: none;
   }
   @keyframes gira { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .rotella { animation-duration: 2.4s; } }
-  .cronometro { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .avviso-freddo { color: var(--tenue); font-size: .85rem; }
-  .esito { margin-top: 1.75rem; }
-  .carta { background: var(--carta); border: 1px solid var(--bordo); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
-  .risposta { font-size: 1.05rem; white-space: pre-wrap; }
-  .etichette { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: 1rem; }
-  .etichetta { font-size: .78rem; padding: .2rem .6rem; border-radius: 999px; background: #ececea; color: var(--tenue); }
-  .etichetta.viva { background: #e2efe9; color: var(--accento); }
-  .etichetta.spenta { background: #f2e6df; color: #8a5a20; }
-  h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .04em; color: var(--tenue); margin: 1.75rem 0 .75rem; }
-  .fonte { border-left: 3px solid var(--accento); padding: .1rem 0 .1rem .9rem; margin-bottom: 1.1rem; }
-  .fonte-intestazione { font-size: .85rem; color: var(--tenue); margin-bottom: .3rem; }
+  .cronometro { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.02rem; }
+  .avviso-freddo { color: var(--tenue); font-size: .85rem; flex: 1 1 14rem; }
+
+  /* --- esito ------------------------------------------------------------ */
+  .esito { margin-top: 2rem; }
+  .risposta { font-size: 1.1rem; line-height: 1.65; white-space: pre-wrap; }
+  .barra-risposta { display: flex; align-items: center; justify-content: space-between;
+                    gap: 1rem; margin-bottom: .9rem; }
+
+  /* Le misure separate: recupero e generazione non si sommano a caso, e
+     tenerle distinte e' un requisito (RF-16), non una scelta grafica. */
+  .misure {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+    gap: .1rem; margin-top: 1.3rem; padding-top: 1.1rem;
+    border-top: 1px solid var(--bordo);
+  }
+  .misura { padding-right: .8rem; }
+  .misura .valore { font-size: 1.02rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .misura .chiave { font-size: .73rem; text-transform: uppercase; letter-spacing: .05em; color: var(--tenue); }
+  .stato { display: inline-flex; align-items: center; gap: .4rem; font-size: .8rem;
+           padding: .25rem .7rem; border-radius: 999px; font-weight: 600; }
+  .stato.viva { background: var(--accento-chiaro); color: var(--accento); }
+  .stato.spenta { background: var(--errore-sfondo); color: var(--errore); }
+  .pallino { width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
+
+  .fonte { background: var(--carta); border: 1px solid var(--bordo);
+           border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: .7rem; }
+  .fonte-intestazione { display: flex; align-items: baseline; justify-content: space-between;
+                        gap: 1rem; font-size: .86rem; color: var(--tenue); margin-bottom: .55rem; }
   .fonte-intestazione strong { color: var(--testo); }
-  .punteggio { float: right; font-variant-numeric: tabular-nums; }
-  .estratto { font-size: .92rem; color: #3c3c39; }
-  .errore { border-left: 3px solid var(--errore); background: #fbf3f2; }
-  .errore .titolo { font-weight: 600; color: var(--errore); margin-bottom: .3rem; }
-  .vuoto { color: var(--tenue); font-style: italic; }
+  .punteggio { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accento); flex: none; }
+  /* La barra e' la rilevanza (1 - distanza): piu' lunga = piu' pertinente. */
+  .barra { height: 3px; background: var(--bordo); border-radius: 999px; overflow: hidden; margin-bottom: .7rem; }
+  .barra span { display: block; height: 100%; background: var(--accento); border-radius: 999px; }
+  .estratto { font-size: .93rem; color: var(--tenue); line-height: 1.6; }
+
+  /* Lo stato iniziale: una pagina vuota non dice se sia pronta o rotta. */
+  .partenza { text-align: center; color: var(--tenue); font-size: .9rem;
+              padding: 2.5rem 1rem; border: 1px dashed var(--bordo-marcato); border-radius: var(--raggio); }
 </style>
 </head>
 <body>
@@ -102,20 +122,32 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
   <header>
     <div>
       <h1>Interroga la base di conoscenza</h1>
-      <p class="sottotitolo">La risposta cita i segmenti da cui è stata tratta: documento, pagina, estratto e punteggio.</p>
+      <p class="sottotitolo">
+        La risposta cita i segmenti da cui è stata tratta: documento, pagina,
+        estratto e punteggio di rilevanza. Generazione ed embedding restano
+        sulla macchina.
+      </p>
     </div>
-    <div class="collegamenti">
-      <a href="/admin/">Admin</a>
+    <nav>
+      {# Il pannello di gestione si mostra solo a chi puo' entrarci: un
+         collegamento che porta a «non hai i permessi» e' peggio di nessun
+         collegamento. #}
+      {% if user.is_staff %}<a href="{% url 'admin:index' %}">Gestione</a>{% endif %}
       <a href="/health">Stato</a>
-      <a href="/api/ask/">API</a>
-    </div>
+      {# LogoutView vuole POST da Django 5: un <a> darebbe 405. #}
+      <form method="post" action="{% url 'esci' %}">
+        {% csrf_token %}
+        <button type="submit" class="uscita">Esci{% if user.is_authenticated %} ({{ user.get_username }}){% endif %}</button>
+      </form>
+    </nav>
   </header>
 
-  <form id="modulo">
+  <form id="modulo" class="carta interroga">
     <div class="riga">
       <label for="domanda">Domanda</label>
       <textarea id="domanda" name="domanda" autofocus
                 placeholder="Quanti giorni di ferie si maturano?"></textarea>
+      <div class="esempi" id="esempi"></div>
     </div>
 
     <div class="riga">
@@ -126,8 +158,8 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
     </div>
 
     <div class="azioni">
-      <button type="submit" id="invia">Chiedi</button>
-      <span class="scorciatoia">Ctrl+Invio per inviare</span>
+      <button type="submit" class="primario" id="invia">Chiedi</button>
+      <span class="scorciatoia"><kbd>Ctrl</kbd> + <kbd>Invio</kbd> per inviare</span>
     </div>
 
     <div class="caricamento" id="caricamento">
@@ -137,7 +169,11 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
     </div>
   </form>
 
-  <div class="esito" id="esito"></div>
+  <div class="esito" id="esito">
+    <div class="partenza">
+      Scrivi una domanda, oppure scegline una di esempio qui sopra.
+    </div>
+  </div>
 
 </div>
 
@@ -145,9 +181,17 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
 (function () {
   "use strict";
 
-  // Il token arriva dal template: la sessione dell'admin autentica anche
-  // queste richieste, ma SessionAuthentication di DRF impone il CSRF.
+  // Il token arriva dal template: la sessione autentica anche queste
+  // richieste, ma SessionAuthentication di DRF impone il CSRF.
   var CSRF = "{{ csrf_token }}";
+
+  // Affordance dell'interfaccia, non configurazione (RF-22): non cambiano
+  // nulla di come il sistema risponde, si limitano a riempire la casella.
+  var ESEMPI = [
+    "Quanti giorni di ferie si maturano?",
+    "Come si richiede un permesso?",
+    "Qual è l'orario di lavoro previsto?"
+  ];
 
   var modulo = document.getElementById("modulo");
   var campoDomanda = document.getElementById("domanda");
@@ -157,6 +201,7 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
   var cronometro = document.getElementById("cronometro");
   var avviso = document.getElementById("avviso");
   var esito = document.getElementById("esito");
+  var contenitoreEsempi = document.getElementById("esempi");
   var tempo = null;
 
   function secondi(ms) {
@@ -168,6 +213,19 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
     d.textContent = testo === null || testo === undefined ? "" : String(testo);
     return d.innerHTML;
   }
+
+  // --- domande di esempio ---------------------------------------------------
+  ESEMPI.forEach(function (testo) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "esempio";
+    b.textContent = testo;
+    b.addEventListener("click", function () {
+      campoDomanda.value = testo;
+      campoDomanda.focus();
+    });
+    contenitoreEsempi.appendChild(b);
+  });
 
   // --- le configurazioni disponibili, coi loro valori (RF-23) --------------
   fetch("/api/pipelines/", {credentials: "same-origin"})
@@ -195,9 +253,12 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
     tempo = setInterval(function () {
       var trascorso = Date.now() - inizio;
       cronometro.textContent = secondi(trascorso);
-      // Dopo 15 s l'attesa non e' piu' ordinaria e va spiegata, o la pagina
-      // sembra bloccata: e' il caricamento del modello, una volta per processo.
-      if (trascorso > 15000 && !avviso.textContent) {
+      // L'attesa si spiega per gradi. A 15 s non e' piu' ordinaria: e' il
+      // modello che entra in memoria, una volta per processo. A 45 s chi
+      // guarda comincia a dubitare, e va detto quanto puo' durare davvero.
+      if (trascorso > 45000) {
+        avviso.textContent = "caricamento del modello in corso: alla prima domanda dopo l'avvio può arrivare a tre minuti, poi le successive costano pochi secondi";
+      } else if (trascorso > 15000 && !avviso.textContent) {
         avviso.textContent = "prima domanda dopo l'avvio: il modello viene caricato in memoria, può volerci qualche minuto";
       }
     }, 100);
@@ -219,41 +280,70 @@ da GET /api/pipelines/ con i loro valori, e a decidere e' sempre il server.
       "</div>";
   }
 
+  function misura(chiave, valore) {
+    return '<div class="misura">' +
+             '<div class="valore">' + fuga(valore) + "</div>" +
+             '<div class="chiave">' + fuga(chiave) + "</div>" +
+           "</div>";
+  }
+
   function mostra(dati) {
     var html =
       '<div class="carta">' +
-        '<div class="risposta">' + fuga(dati.risposta) + "</div>" +
-        '<div class="etichette">' +
-          '<span class="etichetta ' + (dati.generata ? "viva" : "spenta") + '">' +
+        '<div class="barra-risposta">' +
+          '<span class="stato ' + (dati.generata ? "viva" : "spenta") + '">' +
+            '<span class="pallino"></span>' +
             (dati.generata ? "generata dall'LLM" : "nessuna generazione") +
           "</span>" +
-          '<span class="etichetta">' + fuga(dati.pipeline) + "</span>" +
-          '<span class="etichetta">recupero ' + fuga(dati.retrieval_ms) + " ms</span>" +
-          '<span class="etichetta">generazione ' + fuga(dati.generation_ms) + " ms</span>" +
-          '<span class="etichetta">totale ' + fuga(dati.latency_ms) + " ms</span>" +
+          '<button type="button" class="tenue" id="copia">Copia</button>' +
+        "</div>" +
+        '<div class="risposta" id="testo-risposta">' + fuga(dati.risposta) + "</div>" +
+        '<div class="misure">' +
+          misura("recupero", dati.retrieval_ms + " ms") +
+          misura("generazione", dati.generation_ms + " ms") +
+          misura("totale", dati.latency_ms + " ms") +
+          misura("configurazione", dati.pipeline) +
         "</div>" +
       "</div>";
 
     var fonti = dati.fonti || [];
-    html += "<h2>Fonti (" + fonti.length + ")</h2>";
+    html += "<h2>Fonti citate (" + fonti.length + ")</h2>";
     if (!fonti.length) {
       html += '<p class="vuoto">Nessun segmento recuperato: la risposta non è stata generata.</p>';
     } else {
-      html += '<div class="carta">';
       fonti.forEach(function (f) {
+        // La barra e' la rilevanza cosi' com'e' arrivata, non ricalcolata:
+        // 0 = nulla in comune, 1 = coincidente. Il valore fuori scala non si
+        // e' mai osservato, ma la limitazione costa una riga e toglie un modo
+        // di rompere il disegno.
+        var quota = Math.max(0, Math.min(1, Number(f.punteggio) || 0)) * 100;
         html +=
           '<div class="fonte">' +
             '<div class="fonte-intestazione">' +
+              "<span><strong>" + fuga(f.documento) + "</strong> · p. " + fuga(f.pagina) +
+              " · segmento " + fuga(f.ordinale) + "</span>" +
               '<span class="punteggio">' + fuga(f.punteggio) + "</span>" +
-              "<strong>" + fuga(f.documento) + "</strong> · p. " + fuga(f.pagina) +
-              " · segmento " + fuga(f.ordinale) +
             "</div>" +
+            '<div class="barra"><span style="width: ' + quota.toFixed(1) + '%"></span></div>' +
             '<div class="estratto">' + fuga(f.estratto) + "</div>" +
           "</div>";
       });
-      html += "</div>";
     }
     esito.innerHTML = html;
+
+    // Copiare la risposta serve a chi la incolla in un verbale: e' la stessa
+    // ragione per cui i punteggi restano visibili a quattro decimali.
+    var copia = document.getElementById("copia");
+    if (copia && navigator.clipboard) {
+      copia.addEventListener("click", function () {
+        navigator.clipboard.writeText(dati.risposta || "").then(function () {
+          copia.textContent = "Copiata";
+          setTimeout(function () { copia.textContent = "Copia"; }, 1600);
+        });
+      });
+    } else if (copia) {
+      copia.remove();   // niente bottone che non fa nulla
+    }
   }
 
   // --- invio ---------------------------------------------------------------
